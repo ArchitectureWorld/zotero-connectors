@@ -135,3 +135,39 @@ test('unknown actions return a structured error', async () => {
   assert.equal(result.success, false);
   assert.equal(result.error.code, 'UNKNOWN_ACTION');
 });
+
+test('native port forwards a request and posts the structured response', async () => {
+  let messageListener;
+  const posted = [];
+  const port = {
+    onMessage: { addListener: listener => { messageListener = listener; } },
+    onDisconnect: { addListener: () => {} },
+    postMessage: message => posted.push(message),
+    disconnect: () => {},
+  };
+  const browserAPI = {
+    runtime: {
+      id: 'connected-extension',
+      getManifest: () => ({ version: '9.9.9' }),
+      connectNative: host => {
+        assert.equal(host, 'org.zotero.script_trigger');
+        return port;
+      },
+    },
+    tabs: { query: async () => [], get: async () => null },
+  };
+  const zotero = {
+    initDeferred: { promise: Promise.resolve() },
+    Connector_Browser: { onZoteroButtonElementClick: async () => {} },
+    debug: () => {},
+    logError: () => {},
+  };
+
+  createScriptTrigger({ browserAPI, zotero });
+  await messageListener({ id: 'port-1', action: 'ping' });
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].id, 'port-1');
+  assert.equal(posted[0].success, true);
+  assert.equal(posted[0].extensionId, 'connected-extension');
+});
