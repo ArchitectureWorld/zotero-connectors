@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { createScriptTrigger } = require('../src/browserExt/scriptTrigger.js');
 
-function makeHarness({ activeTabs = [], tabsById = {} } = {}) {
+function makeHarness({ activeTabs = [], allTabs = [], tabsById = {} } = {}) {
   const calls = {
     queries: [],
     gets: [],
@@ -21,7 +21,7 @@ function makeHarness({ activeTabs = [], tabsById = {} } = {}) {
     tabs: {
       query: async (query) => {
         calls.queries.push(query);
-        return activeTabs;
+        return query && query.active ? activeTabs : allTabs;
       },
       get: async (tabId) => {
         calls.gets.push(tabId);
@@ -59,19 +59,41 @@ function makeHarness({ activeTabs = [], tabsById = {} } = {}) {
   return { trigger, calls };
 }
 
-test('ping returns extension identity without selecting a tab', async () => {
+test('ping returns a versioned capability contract without selecting a tab', async () => {
   const { trigger, calls } = makeHarness();
 
   const result = await trigger.handleRequest({ id: 'p1', action: 'ping' });
 
-  assert.deepEqual(result, {
-    id: 'p1',
-    success: true,
-    action: 'ping',
-    extensionId: 'test-extension-id',
-    extensionVersion: '1.2.3',
-  });
+  assert.equal(result.id, 'p1');
+  assert.equal(result.success, true);
+  assert.equal(result.action, 'ping');
+  assert.equal(result.extensionId, 'test-extension-id');
+  assert.equal(result.extensionVersion, '1.2.3');
+  assert.equal(result.protocolVersion, 2);
+  assert.deepEqual(result.capabilities, [
+    'list-tabs',
+    'save-active',
+    'save-tab',
+    'save-url',
+    'save-title',
+  ]);
   assert.equal(calls.queries.length, 0);
+  assert.equal(calls.saves.length, 0);
+});
+
+test('list-tabs returns only saveable HTTP(S) tabs', async () => {
+  const tabs = [
+    { id: 1, windowId: 1, active: true, url: 'https://kns.cnki.net/detail', title: 'CNKI' },
+    { id: 2, windowId: 1, active: false, url: 'chrome://extensions', title: 'Extensions' },
+    { id: 3, windowId: 2, active: false, url: 'http://example.org', title: 'Example' },
+  ];
+  const { trigger, calls } = makeHarness({ allTabs: tabs });
+
+  const result = await trigger.handleRequest({ id: 'l1', action: 'list-tabs' });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(result.tabs.map(tab => tab.id), [1, 3]);
+  assert.deepEqual(calls.queries, [{}]);
   assert.equal(calls.saves.length, 0);
 });
 
@@ -104,6 +126,68 @@ test('save-tab invokes the official action for an exact background tab without a
   assert.equal(result.success, true);
   assert.equal(result.triggered, true);
   assert.equal(result.tabId, 88);
+});
+
+test('save-url selects one exact URL without focusing or activating it', async () => {
+  const target = {
+    id: 91,
+    windowId: 11,
+    active: false,
+    url: 'https://bcras.hbut.edu.cn/s/net/cnki/detail?id=123',
+    title: '目标论文 - 中国知网',
+  };
+  const { trigger, calls } = makeHarness({
+    allTabs: [
+      { id: 90, windowId: 11, active: true, url: 'https://example.org', title: 'Other' },
+      target,
+    ],
+  });
+
+  const result = await trigger.handleRequest({
+    id: 'url-1',
+    action: 'save-url',
+    url: target.url,
+  });
+
+  assert.deepEqual(calls.queries, [{}]);
+  assert.deepEqual(calls.saves, [target]);
+  assert.equal(calls.focusedWindows, 0);
+  assert.equal(calls.activatedTabs, 0);
+  assert.equal(result.tabId, target.id);
+  assert.equal(result.url, target.url);
+});
+
+test('save-url fails closed when a substring matches multiple tabs', async () => {
+  const { trigger, calls } = makeHarness({
+    allTabs: [
+      { id: 1, url: 'https://kns.cnki.net/a', title: 'A' },
+      { id: 2, url: 'https://kns.cnki.net/b', title: 'B' },
+    ],
+  });
+
+  const result = await trigger.handleRequest({
+    id: 'url-ambiguous',
+    action: 'save-url',
+    urlContains: 'kns.cnki.net',
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.error.code, 'TAB_AMBIGUOUS');
+  assert.equal(calls.saves.length, 0);
+});
+
+test('save-title selects one tab by a non-empty title fragment', async () => {
+  const target = { id: 22, url: 'https://example.org/paper', title: 'BIM论文 - 中国知网' };
+  const { trigger, calls } = makeHarness({ allTabs: [target] });
+
+  const result = await trigger.handleRequest({
+    id: 'title-1',
+    action: 'save-title',
+    titleContains: 'BIM论文',
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(calls.saves, [target]);
 });
 
 test('save-tab rejects missing or invalid tab IDs', async () => {
