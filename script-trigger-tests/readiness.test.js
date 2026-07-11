@@ -88,3 +88,56 @@ test('a discarded background tab is reloaded and translator detection settles be
   assert.equal(calls.activatedTabs, 0);
   assert.ok(clock >= 200);
 });
+
+test('exact URL save fails without creating a webpage item when translator detection times out', async () => {
+  let clock = 0;
+  const saves = [];
+  const url = 'https://bcras.hbut.edu.cn/s/net/cnki/detail?id=timeout';
+  const tab = {
+    id: 78,
+    windowId: 9,
+    active: false,
+    discarded: false,
+    status: 'complete',
+    title: '尚未识别 - 中国知网',
+    url,
+  };
+  const browserAPI = {
+    runtime: {
+      id: 'test-extension-id',
+      getManifest: () => ({ version: '2.0.0' }),
+      connectNative: () => { throw new Error('not used'); },
+    },
+    tabs: {
+      query: async () => [tab],
+      get: async () => tab,
+    },
+  };
+  const zotero = {
+    initDeferred: { promise: Promise.resolve() },
+    Connector_Browser: {
+      getTabInfo: () => ({ url, translators: null, isPDF: false, uninjectable: false }),
+      onZoteroButtonElementClick: async (target) => saves.push(target),
+    },
+    debug: () => {},
+    logError: () => {},
+  };
+  const trigger = createScriptTrigger({
+    browserAPI,
+    zotero,
+    autoConnect: false,
+    now: () => clock,
+    delay: async (milliseconds) => {
+      clock += milliseconds;
+    },
+    pollInterval: 100,
+    translatorReadyTimeout: 200,
+  });
+
+  const result = await trigger.handleRequest({ id: 'ready-timeout', action: 'save-url', url });
+
+  assert.equal(result.success, false);
+  assert.equal(result.error.code, 'TRANSLATOR_TIMEOUT');
+  assert.equal(saves.length, 0);
+  assert.ok(clock >= 200);
+});
