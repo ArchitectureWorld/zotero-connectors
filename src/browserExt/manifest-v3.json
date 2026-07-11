@@ -14,7 +14,7 @@
 	},
 	"host_permissions": ["http://*/*", "https://*/*"],
 	"permissions": ["tabs", "contextMenus", "cookies", "scripting", "offscreen",
-		"webRequest", "declarativeNetRequest", "webNavigation", "storage"],
+		"webRequest", "declarativeNetRequest", "webNavigation", "storage", "nativeMessaging"],
 	"declarative_net_request": {
 		"rule_resources": [{
 			"id": "styleIntercept",

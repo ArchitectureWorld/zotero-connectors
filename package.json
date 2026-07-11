@@ -26,6 +26,7 @@
     "yargs": "^6.0.0"
   },
   "scripts": {
-    "test": "mocha"
+    "test": "mocha",
+    "test:script-trigger": "node --test script-trigger-tests/extension.test.js && python -m unittest discover native-host/tests -v"
   }
 }
