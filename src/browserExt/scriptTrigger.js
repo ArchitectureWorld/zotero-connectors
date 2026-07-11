@@ -19,7 +19,15 @@
 	const DEFAULT_HOST_NAME = 'org.zotero.script_trigger';
 	const DEFAULT_RECONNECT_DELAY = 5000;
 	const MAX_RECONNECT_DELAY = 60000;
-	const SUPPORTED_ACTIONS = new Set(['ping', 'save-active', 'save-tab']);
+	const PROTOCOL_VERSION = 2;
+	const CAPABILITIES = Object.freeze([
+		'list-tabs',
+		'save-active',
+		'save-tab',
+		'save-url',
+		'save-title',
+	]);
+	const SUPPORTED_ACTIONS = new Set(['ping', ...CAPABILITIES]);
 
 	class ScriptTriggerError extends Error {
 		constructor(code, message) {
@@ -41,6 +49,13 @@
 		};
 	}
 
+	function requireNonEmptyString(value, code, message) {
+		if (typeof value !== 'string' || !value.trim()) {
+			throw new ScriptTriggerError(code, message);
+		}
+		return value.trim();
+	}
+
 	function validateRequest(request) {
 		if (!request || typeof request !== 'object' || Array.isArray(request)) {
 			throw new ScriptTriggerError('INVALID_REQUEST', 'Request must be a JSON object');
@@ -52,6 +67,28 @@
 			&& (!Number.isInteger(request.tabId) || request.tabId < 0)) {
 			throw new ScriptTriggerError('INVALID_TAB_ID', 'save-tab requires a non-negative integer tabId');
 		}
+		if (request.action === 'save-url') {
+			const hasExact = typeof request.url === 'string' && !!request.url.trim();
+			const hasContains = typeof request.urlContains === 'string' && !!request.urlContains.trim();
+			if (hasExact === hasContains) {
+				throw new ScriptTriggerError(
+					'INVALID_URL_SELECTOR',
+					'save-url requires exactly one non-empty url or urlContains selector',
+				);
+			}
+		}
+		if (request.action === 'save-title') {
+			requireNonEmptyString(
+				request.titleContains,
+				'INVALID_TITLE_SELECTOR',
+				'save-title requires a non-empty titleContains selector',
+			);
+		}
+	}
+
+	function isSaveableTab(tab) {
+		const url = tab && (tab.url || tab.pendingUrl || '');
+		return !!tab && Number.isInteger(tab.id) && /^https?:\/\//i.test(url);
 	}
 
 	function validateTargetTab(tab) {
@@ -63,6 +100,32 @@
 			throw new ScriptTriggerError('UNSUPPORTED_URL', `Cannot save unsupported URL: ${url || '(empty)'}`);
 		}
 		return tab;
+	}
+
+	function publicTab(tab) {
+		return {
+			id: tab.id,
+			windowId: tab.windowId,
+			active: !!tab.active,
+			discarded: !!tab.discarded,
+			status: tab.status || '',
+			title: tab.title || '',
+			url: tab.url || tab.pendingUrl || '',
+		};
+	}
+
+	function selectOneTab(tabs, predicate, selectorDescription) {
+		const matches = (tabs || []).filter(isSaveableTab).filter(predicate);
+		if (matches.length === 0) {
+			throw new ScriptTriggerError('TAB_NOT_FOUND', `No browser tab matched ${selectorDescription}`);
+		}
+		if (matches.length > 1) {
+			throw new ScriptTriggerError(
+				'TAB_AMBIGUOUS',
+				`Multiple browser tabs matched ${selectorDescription}; use an exact URL or tab ID`,
+			);
+		}
+		return matches[0];
 	}
 
 	function createScriptTrigger(options) {
@@ -85,6 +148,11 @@
 		let reconnectScheduled = false;
 		let stopped = false;
 
+		async function listTabs() {
+			const tabs = await browserAPI.tabs.query({});
+			return (tabs || []).filter(isSaveableTab).map(publicTab);
+		}
+
 		async function resolveTab(request) {
 			if (request.action === 'save-tab') {
 				try {
@@ -93,6 +161,34 @@
 					if (error instanceof ScriptTriggerError) throw error;
 					throw new ScriptTriggerError('TAB_NOT_FOUND', error.message || `No tab with id ${request.tabId}`);
 				}
+			}
+
+			if (request.action === 'save-url') {
+				const tabs = await browserAPI.tabs.query({});
+				if (typeof request.url === 'string' && request.url.trim()) {
+					const exactURL = request.url.trim();
+					return selectOneTab(
+						tabs,
+						tab => (tab.url || tab.pendingUrl || '') === exactURL,
+						`exact URL ${exactURL}`,
+					);
+				}
+				const fragment = request.urlContains.trim();
+				return selectOneTab(
+					tabs,
+					tab => (tab.url || tab.pendingUrl || '').includes(fragment),
+					`URL fragment ${fragment}`,
+				);
+			}
+
+			if (request.action === 'save-title') {
+				const tabs = await browserAPI.tabs.query({});
+				const fragment = request.titleContains.trim().toLocaleLowerCase();
+				return selectOneTab(
+					tabs,
+					tab => (tab.title || '').toLocaleLowerCase().includes(fragment),
+					`title fragment ${request.titleContains.trim()}`,
+				);
 			}
 
 			const tabs = await browserAPI.tabs.query({
@@ -117,6 +213,17 @@
 						action: request.action,
 						extensionId: browserAPI.runtime.id,
 						extensionVersion: manifest.version,
+						protocolVersion: PROTOCOL_VERSION,
+						capabilities: Array.from(CAPABILITIES),
+					};
+				}
+
+				if (request.action === 'list-tabs') {
+					return {
+						id: request.id,
+						success: true,
+						action: request.action,
+						tabs: await listTabs(),
 					};
 				}
 
@@ -190,6 +297,7 @@
 		const api = {
 			connect,
 			handleRequest,
+			listTabs,
 			resolveTab,
 			stop,
 		};
@@ -202,6 +310,8 @@
 
 	return {
 		DEFAULT_HOST_NAME,
+		PROTOCOL_VERSION,
+		CAPABILITIES,
 		ScriptTriggerError,
 		createScriptTrigger,
 	};
