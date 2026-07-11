@@ -9,16 +9,29 @@ if (-not (Test-Path (Join-Path $ExtensionDir 'manifest.json'))) {
 Set-Clipboard -Value $ExtensionDir
 Start-Process explorer.exe -ArgumentList ('"{0}"' -f $ExtensionDir)
 
-$candidates = @(
+# Select-Object returns the complete path even when there is only one match.
+# Using $candidates[0] here is unsafe in Windows PowerShell because a single
+# pipeline result can become a scalar string, and [0] then returns only "C".
+$chromePath = @(
     (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
     (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
-) | Where-Object { $_ -and (Test-Path $_) }
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 
-if ($candidates.Count -gt 0) {
-    Start-Process -FilePath $candidates[0] -ArgumentList 'chrome://extensions/'
-} else {
-    Start-Process 'chrome://extensions/'
+$chromeOpened = $false
+if ($chromePath) {
+    try {
+        Start-Process -FilePath $chromePath -ArgumentList 'chrome://extensions/'
+        $chromeOpened = $true
+    } catch {
+        Write-Warning ('无法自动打开 Chrome 扩展页面：{0}' -f $_.Exception.Message)
+    }
+}
+
+if (-not $chromeOpened) {
+    Write-Host ''
+    Write-Host '没有自动打开 Chrome，但插件文件夹已经打开。' -ForegroundColor Yellow
+    Write-Host '请自己打开 Chrome，并在地址栏输入：chrome://extensions'
 }
 
 Write-Host ''
