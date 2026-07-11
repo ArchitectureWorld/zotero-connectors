@@ -25,7 +25,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Set up Python
@@ -55,7 +55,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install Linux build tools
@@ -73,6 +73,8 @@ jobs:
           test -f build/manifestv3/scriptTrigger.js
           jq -e '.permissions | index("nativeMessaging")' build/manifestv3/manifest.json
           jq -e --arg key "$CHROME_EXTENSION_KEY" '.key == $key' build/manifestv3/manifest.json
+          grep -q "save-url" build/manifestv3/scriptTrigger.js
+          grep -q "PROTOCOL_VERSION = 2" build/manifestv3/scriptTrigger.js
           python - <<'PY'
           import base64, hashlib, json, os
           manifest = json.load(open('build/manifestv3/manifest.json', encoding='utf-8'))
@@ -130,6 +132,21 @@ jobs:
             --paths native-host `
             native-host/zotero_script_trigger_cli.py
 
+      - name: Verify packaged CLI commands
+        shell: pwsh
+        run: |
+          $help = & .\dist\zotero_script_trigger_cli.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI --help failed' }
+          foreach ($command in @('list-tabs', 'save-url', 'save-title')) {
+            if ($help -notmatch [regex]::Escape($command)) {
+              throw "Packaged CLI help is missing command: $command"
+            }
+          }
+          $saveUrlHelp = & .\dist\zotero_script_trigger_cli.exe save-url --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $saveUrlHelp -notmatch '--url') {
+            throw 'Packaged CLI save-url --help failed'
+          }
+
       - name: Download built extension
         uses: actions/download-artifact@v4
         with:
@@ -163,7 +180,7 @@ jobs:
             [System.IO.File]::WriteAllText($_.FullName, $text, $utf8Bom)
           }
 
-          Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-Test-Package-v2.zip -Force
+          Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-Test-Package-v3.zip -Force
 
       - name: Verify Windows PowerShell 5.1 compatibility
         shell: pwsh
@@ -204,7 +221,7 @@ jobs:
             'package/4-保存当前网页.bat',
             'package/5-卸载.bat',
             'package/使用说明.txt',
-            'Zotero-Script-Trigger-Test-Package-v2.zip'
+            'Zotero-Script-Trigger-Test-Package-v3.zip'
           )
           foreach ($path in $required) {
             if (-not (Test-Path $path)) { throw "Missing package file: $path" }
@@ -213,7 +230,7 @@ jobs:
       - name: Upload beginner test package
         uses: actions/upload-artifact@v4
         with:
-          name: Zotero-Script-Trigger-Test-Package-v2
-          path: Zotero-Script-Trigger-Test-Package-v2.zip
+          name: Zotero-Script-Trigger-Test-Package-v3
+          path: Zotero-Script-Trigger-Test-Package-v3.zip
           if-no-files-found: error
           retention-days: 14
