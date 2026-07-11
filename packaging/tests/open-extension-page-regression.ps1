@@ -1,15 +1,47 @@
 $ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'open-extension-page.ps1'
-$content = Get-Content -LiteralPath $scriptPath -Raw
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $scriptPath,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
 
-# In Windows PowerShell, a pipeline with one result can become a scalar string.
-# Indexing that string with [0] returns only its first character (for example, "C").
-if ($content -match '\$candidates\s*\[\s*0\s*\]') {
-    throw 'Regression: open-extension-page.ps1 indexes a possibly scalar string with $candidates[0].'
+if ($parseErrors.Count -gt 0) {
+    $messages = ($parseErrors | ForEach-Object { $_.Message }) -join '; '
+    throw "PowerShell parse failed: $messages"
 }
 
-if ($content -notmatch 'Select-Object\s+-First\s+1') {
+# In Windows PowerShell, a pipeline with one result can become a scalar string.
+# Indexing that scalar returns only its first character instead of the full path.
+$unsafeIndexes = $ast.FindAll({
+    param($node)
+    if ($node -isnot [System.Management.Automation.Language.IndexExpressionAst]) {
+        return $false
+    }
+    $target = $node.Target
+    return (
+        $target -is [System.Management.Automation.Language.VariableExpressionAst] -and
+        $target.VariablePath.UserPath -eq 'candidates'
+    )
+}, $true)
+
+if ($unsafeIndexes.Count -gt 0) {
+    throw 'Regression: open-extension-page.ps1 indexes a possibly scalar candidates value.'
+}
+
+$firstPathSelectors = $ast.FindAll({
+    param($node)
+    return (
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq 'Select-Object' -and
+        $node.Extent.Text -match '-First\s+1'
+    )
+}, $true)
+
+if ($firstPathSelectors.Count -eq 0) {
     throw 'Regression: open-extension-page.ps1 must select the first complete path with Select-Object -First 1.'
 }
 
