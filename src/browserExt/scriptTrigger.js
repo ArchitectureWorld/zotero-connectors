@@ -231,7 +231,13 @@
 		async function prepareTargetTab(tab) {
 			const readyTab = await waitForPageReady(tab);
 			const translatorReady = await waitForTranslatorDetection(readyTab);
-			return { tab: readyTab, translatorReady };
+			if (!translatorReady) {
+				throw new ScriptTriggerError(
+					'TRANSLATOR_TIMEOUT',
+					`Timed out waiting for Zotero translator detection on ${readyTab.url || readyTab.pendingUrl || '(unknown URL)'}`,
+				);
+			}
+			return { tab: readyTab, translatorReady: true };
 		}
 
 		async function listTabs() {
@@ -317,7 +323,7 @@
 					success: true,
 					action: request.action,
 					triggered: true,
-					translatorReady: prepared.translatorReady,
+					translatorReady: true,
 					tabId: tab.id,
 					windowId: tab.windowId,
 					title: tab.title || '',
