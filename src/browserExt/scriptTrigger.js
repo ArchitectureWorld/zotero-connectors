@@ -181,7 +181,7 @@
 		}
 
 		async function waitForPageReady(tab) {
-			let current = validateTargetTab(tab);
+			const current = validateTargetTab(tab);
 			const needsReload = !!current.discarded;
 			const needsWait = needsReload || (current.status && current.status !== 'complete');
 
@@ -285,6 +285,20 @@
 			return validateTargetTab(tabs && tabs[0]);
 		}
 
+		function assertExactTargetUnchanged(request, tab) {
+			if (request.action !== 'save-url' || typeof request.url !== 'string' || !request.url.trim()) {
+				return;
+			}
+			const expectedURL = request.url.trim();
+			const actualURL = tab.url || tab.pendingUrl || '';
+			if (actualURL !== expectedURL) {
+				throw new ScriptTriggerError(
+					'TARGET_CHANGED',
+					`Target tab changed before saving: expected ${expectedURL}, got ${actualURL || '(empty)'}`,
+				);
+			}
+		}
+
 		async function handleRequest(request) {
 			try {
 				validateRequest(request);
@@ -317,6 +331,7 @@
 				const resolvedTab = await resolveTab(request);
 				const prepared = await prepareTargetTab(resolvedTab);
 				const tab = prepared.tab;
+				assertExactTargetUnchanged(request, tab);
 				await zotero.Connector_Browser.onZoteroButtonElementClick(tab);
 				return {
 					id: request.id,
