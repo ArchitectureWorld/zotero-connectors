@@ -154,7 +154,41 @@ jobs:
           Copy-Item 'packaging/4-保存当前网页.bat' package/
           Copy-Item 'packaging/5-卸载.bat' package/
           Copy-Item 'packaging/使用说明.txt' package/
-          Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-Test-Package.zip -Force
+
+          # Windows PowerShell 5.1 treats UTF-8 scripts without a BOM as the
+          # active ANSI code page. Chinese text can then corrupt tokenization.
+          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+          Get-ChildItem package/安装工具/*.ps1 | ForEach-Object {
+            $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::WriteAllText($_.FullName, $text, $utf8Bom)
+          }
+
+          Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-Test-Package-v2.zip -Force
+
+      - name: Verify Windows PowerShell 5.1 compatibility
+        shell: pwsh
+        run: |
+          foreach ($script in Get-ChildItem package/安装工具/*.ps1) {
+            $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "PowerShell script is missing UTF-8 BOM: $($script.FullName)"
+            }
+
+            $escapedPath = $script.FullName.Replace("'", "''")
+            $parseCommand = @"
+          `$tokens = `$null
+          `$errors = `$null
+          [System.Management.Automation.Language.Parser]::ParseFile('$escapedPath', [ref]`$tokens, [ref]`$errors) | Out-Null
+          if (`$errors.Count -gt 0) {
+            `$errors | ForEach-Object { Write-Error `$_.Message }
+            exit 1
+          }
+          "@
+            & powershell.exe -NoProfile -NonInteractive -Command $parseCommand
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows PowerShell 5.1 could not parse: $($script.FullName)"
+            }
+          }
 
       - name: Verify package contents
         shell: pwsh
@@ -170,7 +204,7 @@ jobs:
             'package/4-保存当前网页.bat',
             'package/5-卸载.bat',
             'package/使用说明.txt',
-            'Zotero-Script-Trigger-Test-Package.zip'
+            'Zotero-Script-Trigger-Test-Package-v2.zip'
           )
           foreach ($path in $required) {
             if (-not (Test-Path $path)) { throw "Missing package file: $path" }
@@ -179,7 +213,7 @@ jobs:
       - name: Upload beginner test package
         uses: actions/upload-artifact@v4
         with:
-          name: Zotero-Script-Trigger-Test-Package
-          path: Zotero-Script-Trigger-Test-Package.zip
+          name: Zotero-Script-Trigger-Test-Package-v2
+          path: Zotero-Script-Trigger-Test-Package-v2.zip
           if-no-files-found: error
           retention-days: 14
