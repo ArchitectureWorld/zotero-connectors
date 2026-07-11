@@ -1,9 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'open-extension-page.ps1'
+$source = [System.IO.File]::ReadAllText($scriptPath, [System.Text.Encoding]::UTF8)
 $tokens = $null
 $parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+$ast = [System.Management.Automation.Language.Parser]::ParseInput(
+    $source,
     $scriptPath,
     [ref]$tokens,
     [ref]$parseErrors
