@@ -1,0 +1,236 @@
+name: Build script-trigger test package
+
+'on':
+  push:
+    branches:
+      - feature/script-trigger
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run automated tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Run script-trigger tests
+        run: npm run test:script-trigger
+
+  build-extension:
+    name: Build Chrome extension
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyzBMzeQE7NYNbfkgB9u2LE8XFDRsctrDtEe0kHkA/gb38Gz34miCf/fgT87FmA3BsFT90yuKwpdFEtWbEVyYvbMfxWfgcsnwm1CmG3wsaemanmpX2ykoR9qXeokZXVreaXWvLT8J78Uq2ZiXHvc8XtabZrkoTAiTf2ioTUw+C4OAkYRz9P4kvaSTkWj5Oc9IgruGdWMPvavqbqS1TjmQqW2ODqym9V7U4MMvIxMyjXnd+EQMcXQRcXBCxCRD4NrfnIesrcoeD6h1bEBNior+2R4UH42D9XhB+QLaC4IpJE+acGK9UbcZpZwBqjcDDhth15TUaH0BdxN7FuT0CGW+vwIDAQAB
+      EXPECTED_EXTENSION_ID: anakemdifclhajhpbjlgfpeokaphddam
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Linux build tools
+        run: sudo apt-get update && sudo apt-get install -y jq rsync
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Build Manifest V3 extension
+        run: ./build.sh -p b -d
+
+      - name: Verify extension package
+        run: |
+          test -f build/manifestv3/manifest.json
+          test -f build/manifestv3/scriptTrigger.js
+          jq -e '.permissions | index("nativeMessaging")' build/manifestv3/manifest.json
+          jq -e --arg key "$CHROME_EXTENSION_KEY" '.key == $key' build/manifestv3/manifest.json
+          grep -q "save-url" build/manifestv3/scriptTrigger.js
+          grep -q "PROTOCOL_VERSION = 2" build/manifestv3/scriptTrigger.js
+          python - <<'PY'
+          import base64, hashlib, json, os
+          manifest = json.load(open('build/manifestv3/manifest.json', encoding='utf-8'))
+          public_key = base64.b64decode(manifest['key'])
+          digest = hashlib.sha256(public_key).digest()[:16]
+          alphabet = 'abcdefghijklmnop'
+          extension_id = ''.join(alphabet[b >> 4] + alphabet[b & 15] for b in digest)
+          assert extension_id == os.environ['EXPECTED_EXTENSION_ID'], (extension_id, os.environ['EXPECTED_EXTENSION_ID'])
+          print(f'Extension ID: {extension_id}')
+          PY
+
+      - name: Upload built extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-extension
+          path: build/manifestv3
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows:
+    name: Build beginner Windows package
+    needs: build-extension
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.11.1
+
+      - name: Build native host executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name zotero_script_trigger_host `
+            --paths native-host `
+            native-host/zotero_script_trigger_host.py
+
+      - name: Build command-line executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name zotero_script_trigger_cli `
+            --paths native-host `
+            native-host/zotero_script_trigger_cli.py
+
+      - name: Verify packaged CLI commands
+        shell: pwsh
+        run: |
+          $help = & .\dist\zotero_script_trigger_cli.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI --help failed' }
+          foreach ($command in @('list-tabs', 'save-url', 'save-title')) {
+            if ($help -notmatch [regex]::Escape($command)) {
+              throw "Packaged CLI help is missing command: $command"
+            }
+          }
+          $saveUrlHelp = & .\dist\zotero_script_trigger_cli.exe save-url --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $saveUrlHelp -notmatch '--url') {
+            throw 'Packaged CLI save-url --help failed'
+          }
+
+      - name: Download built extension
+        uses: actions/download-artifact@v4
+        with:
+          name: built-extension
+          path: package/浏览器插件
+
+      - name: Assemble beginner package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/app | Out-Null
+          New-Item -ItemType Directory -Force package/安装工具 | Out-Null
+          Copy-Item dist/zotero_script_trigger_host.exe package/app/
+          Copy-Item dist/zotero_script_trigger_cli.exe package/app/
+          Copy-Item packaging/install-packaged.ps1 package/安装工具/install.ps1
+          Copy-Item packaging/uninstall-packaged.ps1 package/安装工具/uninstall.ps1
+          Copy-Item packaging/open-extension-page.ps1 package/安装工具/open-extension-page.ps1
+          Copy-Item packaging/test-connection.ps1 package/安装工具/test-connection.ps1
+          Copy-Item packaging/save-current.ps1 package/安装工具/save-current.ps1
+          Copy-Item 'packaging/1-安装本地助手.bat' package/
+          Copy-Item 'packaging/2-加载浏览器插件.bat' package/
+          Copy-Item 'packaging/3-测试连接.bat' package/
+          Copy-Item 'packaging/4-保存当前网页.bat' package/
+          Copy-Item 'packaging/5-卸载.bat' package/
+          Copy-Item 'packaging/使用说明.txt' package/
+
+          # Windows PowerShell 5.1 treats UTF-8 scripts without a BOM as the
+          # active ANSI code page. Chinese text can then corrupt tokenization.
+          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+          Get-ChildItem package/安装工具/*.ps1 | ForEach-Object {
+            $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::WriteAllText($_.FullName, $text, $utf8Bom)
+          }
+
+          Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-Test-Package-v3.zip -Force
+
+      - name: Verify Windows PowerShell 5.1 compatibility
+        shell: pwsh
+        run: |
+          foreach ($script in Get-ChildItem package/安装工具/*.ps1) {
+            $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "PowerShell script is missing UTF-8 BOM: $($script.FullName)"
+            }
+
+            $escapedPath = $script.FullName.Replace("'", "''")
+            $parseCommand = @"
+          `$tokens = `$null
+          `$errors = `$null
+          [System.Management.Automation.Language.Parser]::ParseFile('$escapedPath', [ref]`$tokens, [ref]`$errors) | Out-Null
+          if (`$errors.Count -gt 0) {
+            `$errors | ForEach-Object { Write-Error `$_.Message }
+            exit 1
+          }
+          "@
+            & powershell.exe -NoProfile -NonInteractive -Command $parseCommand
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows PowerShell 5.1 could not parse: $($script.FullName)"
+            }
+          }
+
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          $required = @(
+            'package/浏览器插件/manifest.json',
+            'package/浏览器插件/scriptTrigger.js',
+            'package/app/zotero_script_trigger_host.exe',
+            'package/app/zotero_script_trigger_cli.exe',
+            'package/1-安装本地助手.bat',
+            'package/2-加载浏览器插件.bat',
+            'package/3-测试连接.bat',
+            'package/4-保存当前网页.bat',
+            'package/5-卸载.bat',
+            'package/使用说明.txt',
+            'Zotero-Script-Trigger-Test-Package-v3.zip'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Missing package file: $path" }
+          }
+
+      - name: Upload beginner test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zotero-Script-Trigger-Test-Package-v3
+          path: Zotero-Script-Trigger-Test-Package-v3.zip
+          if-no-files-found: error
+          retention-days: 14

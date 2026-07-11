@@ -1,0 +1,24 @@
+name: Packaging regression tests
+
+'on':
+  push:
+    branches:
+      - feature/script-trigger
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell-51:
+    name: Windows PowerShell packaging tests
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Chrome path selection regression test
+        shell: powershell
+        run: .\packaging\tests\open-extension-page-regression.ps1

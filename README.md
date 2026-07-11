@@ -2,6 +2,21 @@
 
 [![Build Status](https://travis-ci.org/zotero/zotero-connectors.svg?branch=master)](https://travis-ci.org/zotero/zotero-connectors)
 
+## ArchitectureWorld script-trigger fork
+
+The `feature/script-trigger` branch preserves the official Zotero Connector save path and adds a Windows-local command interface for external agents and scripts.
+
+Key properties:
+
+- Chrome may be foreground, background, covered, or minimized.
+- No browser focus, tab activation, keyboard simulation, or mouse simulation is used.
+- Protocol v2 supports deterministic exact-URL targeting through `save-url --url`.
+- The packaged CLI is installed at `%LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe`.
+- `triggered=true` means the official Connector action accepted the request; consumers must verify Zotero persistence separately.
+
+User installation and commands: `docs/SCRIPT_TRIGGER.md`  
+Agent integration contract: `docs/AGENT_INTEGRATION.md`
+
 ## Building
 
 1. `git clone --recursive https://github.com/zotero/zotero-connectors.git`
@@ -17,12 +32,12 @@ The connectors are built in `build/`.
 
 1. Go to chrome://extensions/
 1. Enable "Developer Mode".
-1. Click "Load unpacked extension…" and select the `build/browserExt` directory.
+1. Click "Load unpacked extension…" and select the `build/manifestv3` directory.
 
 ### Firefox
 
 1. Go to about:debugging
-1. Click "Load Temporary Add-on" and select the `build/browserExt/manifest.json` file.
+1. Click "Load Temporary Add-on" and select the `build/firefox/manifest.json` file.
 
 ### Safari
 
@@ -51,7 +66,7 @@ An overview of the Zotero Connector architecture.
 ##### Chrome/Firefox Browser Extension Framework
 
 The extension uses the WebExtension API cross-browser technology. See [Chrome Extension docs](https://developer.chrome.com/extensions)
-and [Firefox Extension docs](https://developer.mozilla.org/en-US/Add-ons/WebExtensions) for more information.
+and [Firefox Extension docs](https://developer.mozilla.org/en-US/Add-ons/WebExtensions/Content_scripts) for more information.
 
 ##### Safari Extension Framework
 
@@ -98,7 +113,7 @@ fetched either from [Zotero (c) or zotero.org (d)](https://github.com/zotero/zot
 The background process is also responsible for updating the extension UI, kicking off translations, storing and 
 retrieving connector preferences and sending translated items to Zotero or zotero.org. Browser specific scripts are
 available for [BrowserExt](https://github.com/zotero/zotero-connectors/blob/master/src/browserExt/background.js)
-and [Safari](https://github.com/zotero/zotero-connectors/blob/master/src/safari/global.html).
+and [Safari](https://github.com/zotero/safari-app-extension).
 
 ##### c) Connector server in Zotero
 
@@ -132,7 +147,7 @@ on the injected end is possible to treat values that cannot be sent as-is via th
 The background process registers message listeners in [*messaging.js*](https://github.com/zotero/zotero-connectors/blob/e1a16c8ad2e17c6893554c3f376384e18182202d/src/common/messaging.js).
 `Zotero.Messaging` class also provides a way to send messages to injected scripts and add custom message listeners.
 
-The injected scripts monkey-patch methods in *messaging_injected.js*([BrowserExt](https://github.com/zotero/zotero-connectors/blob/e1a16c8ad2e17c6893554c3f376384e18182202d/src/browserExt/messaging_inject.js)/[Safari](https://github.com/zotero/zotero-connectors/blob/e1a16c8ad2e17c6893554c3f376384e18182202d/src/safari/messaging_inject.js))
+The injected scripts monkey-patch methods in *messaging_injected.js*([BrowserExt](https://github.com/zotero/zotero-connectors/blob/e1a16c8ad2e17c6893554c3f376384e18182202d/src/browserExt/messaging_inject.js)/[Safari](https://github.com/zotero/safari-app-extension))
 `Zotero.Messaging` class also provides a way to send messages to the background process and add message listeners.
 
 ## Contact
