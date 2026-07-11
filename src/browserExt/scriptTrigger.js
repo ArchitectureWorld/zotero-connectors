@@ -19,6 +19,9 @@
 	const DEFAULT_HOST_NAME = 'org.zotero.script_trigger';
 	const DEFAULT_RECONNECT_DELAY = 5000;
 	const MAX_RECONNECT_DELAY = 60000;
+	const DEFAULT_POLL_INTERVAL = 100;
+	const DEFAULT_PAGE_READY_TIMEOUT = 15000;
+	const DEFAULT_TRANSLATOR_READY_TIMEOUT = 10000;
 	const PROTOCOL_VERSION = 2;
 	const CAPABILITIES = Object.freeze([
 		'list-tabs',
@@ -133,8 +136,18 @@
 		const browserAPI = options.browserAPI;
 		const zotero = options.zotero;
 		const hostName = options.hostName || DEFAULT_HOST_NAME;
-		const schedule = options.schedule || ((fn, delay) => setTimeout(fn, delay));
+		const schedule = options.schedule || ((fn, timeout) => setTimeout(fn, timeout));
 		const autoConnect = options.autoConnect !== false;
+		const now = options.now || (() => Date.now());
+		const delay = options.delay || ((milliseconds) => {
+			if (zotero.Promise && typeof zotero.Promise.delay === 'function') {
+				return zotero.Promise.delay(milliseconds);
+			}
+			return new Promise(resolve => setTimeout(resolve, milliseconds));
+		});
+		const pollInterval = options.pollInterval || DEFAULT_POLL_INTERVAL;
+		const pageReadyTimeout = options.pageReadyTimeout || DEFAULT_PAGE_READY_TIMEOUT;
+		const translatorReadyTimeout = options.translatorReadyTimeout || DEFAULT_TRANSLATOR_READY_TIMEOUT;
 
 		if (!browserAPI || !browserAPI.runtime || !browserAPI.tabs) {
 			throw new Error('browserAPI with runtime and tabs is required');
@@ -148,6 +161,79 @@
 		let reconnectScheduled = false;
 		let stopped = false;
 
+		async function waitUntil(check, timeout) {
+			const deadline = now() + timeout;
+			while (true) {
+				const value = await check();
+				if (value) return value;
+				if (now() >= deadline) return null;
+				await delay(pollInterval);
+			}
+		}
+
+		async function getTab(tabId) {
+			try {
+				return validateTargetTab(await browserAPI.tabs.get(tabId));
+			} catch (error) {
+				if (error instanceof ScriptTriggerError) throw error;
+				throw new ScriptTriggerError('TAB_NOT_FOUND', error.message || `No tab with id ${tabId}`);
+			}
+		}
+
+		async function waitForPageReady(tab) {
+			let current = validateTargetTab(tab);
+			const needsReload = !!current.discarded;
+			const needsWait = needsReload || (current.status && current.status !== 'complete');
+
+			if (needsReload) {
+				if (typeof browserAPI.tabs.reload !== 'function') {
+					throw new ScriptTriggerError('TAB_RELOAD_UNAVAILABLE', 'Browser tab reload API is unavailable');
+				}
+				await browserAPI.tabs.reload(current.id);
+			}
+
+			if (!needsWait) return current;
+
+			const ready = await waitUntil(async () => {
+				const refreshed = await getTab(current.id);
+				if (refreshed.discarded) return null;
+				if (refreshed.status && refreshed.status !== 'complete') return null;
+				return refreshed;
+			}, pageReadyTimeout);
+
+			if (!ready) {
+				throw new ScriptTriggerError(
+					'TAB_LOAD_TIMEOUT',
+					`Timed out waiting for tab ${current.id} to finish loading`,
+				);
+			}
+			return ready;
+		}
+
+		async function waitForTranslatorDetection(tab) {
+			if (typeof zotero.Connector_Browser.getTabInfo !== 'function') return true;
+			const expectedURL = tab.url || tab.pendingUrl || '';
+			const detected = await waitUntil(() => {
+				const tabInfo = zotero.Connector_Browser.getTabInfo(tab.id);
+				if (!tabInfo) return null;
+				if (tabInfo.url && tabInfo.url !== expectedURL) return null;
+				if (tabInfo.translators !== null || tabInfo.isPDF || tabInfo.uninjectable) {
+					return true;
+				}
+				return null;
+			}, translatorReadyTimeout);
+			if (!detected && zotero.debug) {
+				zotero.debug(`Script trigger: translator detection timed out for ${expectedURL}`);
+			}
+			return !!detected;
+		}
+
+		async function prepareTargetTab(tab) {
+			const readyTab = await waitForPageReady(tab);
+			const translatorReady = await waitForTranslatorDetection(readyTab);
+			return { tab: readyTab, translatorReady };
+		}
+
 		async function listTabs() {
 			const tabs = await browserAPI.tabs.query({});
 			return (tabs || []).filter(isSaveableTab).map(publicTab);
@@ -155,12 +241,7 @@
 
 		async function resolveTab(request) {
 			if (request.action === 'save-tab') {
-				try {
-					return validateTargetTab(await browserAPI.tabs.get(request.tabId));
-				} catch (error) {
-					if (error instanceof ScriptTriggerError) throw error;
-					throw new ScriptTriggerError('TAB_NOT_FOUND', error.message || `No tab with id ${request.tabId}`);
-				}
+				return getTab(request.tabId);
 			}
 
 			if (request.action === 'save-url') {
@@ -227,13 +308,16 @@
 					};
 				}
 
-				const tab = await resolveTab(request);
+				const resolvedTab = await resolveTab(request);
+				const prepared = await prepareTargetTab(resolvedTab);
+				const tab = prepared.tab;
 				await zotero.Connector_Browser.onZoteroButtonElementClick(tab);
 				return {
 					id: request.id,
 					success: true,
 					action: request.action,
 					triggered: true,
+					translatorReady: prepared.translatorReady,
 					tabId: tab.id,
 					windowId: tab.windowId,
 					title: tab.title || '',
@@ -250,12 +334,12 @@
 		function scheduleReconnect() {
 			if (stopped || reconnectScheduled) return;
 			reconnectScheduled = true;
-			const delay = reconnectDelay;
+			const timeout = reconnectDelay;
 			reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
 			schedule(() => {
 				reconnectScheduled = false;
 				connect();
-			}, delay);
+			}, timeout);
 		}
 
 		function connect() {
@@ -298,6 +382,7 @@
 			connect,
 			handleRequest,
 			listTabs,
+			prepareTargetTab,
 			resolveTab,
 			stop,
 		};
