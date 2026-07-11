@@ -27,6 +27,6 @@
   },
   "scripts": {
     "test": "mocha",
-    "test:script-trigger": "node --test script-trigger-tests/extension.test.js && python -m unittest discover native-host/tests -v"
+    "test:script-trigger": "node --test script-trigger-tests/*.test.js && python -m unittest discover native-host/tests -v"
   }
 }
