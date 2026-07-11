@@ -1,19 +1,92 @@
 # Zotero Connector Script Trigger
 
-This fork adds a Windows script entrypoint that invokes the existing Zotero Connector toolbar-button action. It does not reimplement translators, snapshots, PDF handling, item selection, or saving.
+This fork adds a Windows-local command interface that invokes the existing Zotero Connector toolbar-button action. It does not reimplement translators, snapshots, PDF handling, item selection, or Zotero saving.
 
-## Supported behavior
+## Behavior
 
-- Browser in foreground: supported.
-- Browser behind another application: supported.
-- Browser minimized: supported.
-- Exact background tab by tab ID: supported.
-- Browser completely closed: not supported; the CLI returns a connection error.
-- Multi-item pages: the official Zotero item selector may still appear.
+- Chrome may be foreground, covered, background, or minimized.
+- No browser window or tab is focused or activated by the trigger.
+- Exact background targeting is supported by tab ID or exact URL.
+- URL/title substring targeting fails when multiple tabs match.
+- Browser completely closed is not supported; the CLI returns a connection error.
+- Multiple-item pages still use the official Zotero item selector.
 
-A successful CLI response with `"triggered": true` means the official Connector action accepted the command. It does not independently prove that Zotero finished writing the item, because official saving can continue asynchronously or require item selection.
+A response with `"triggered": true` means the official Connector action accepted the command. Saving may continue asynchronously, and this response is not proof that Zotero persisted metadata or an attachment.
 
-## Build the extension
+## Beginner package
+
+GitHub Actions produces a Windows ZIP containing:
+
+```text
+浏览器插件/
+app/zotero_script_trigger_host.exe
+app/zotero_script_trigger_cli.exe
+1-安装本地助手.bat
+2-加载浏览器插件.bat
+3-测试连接.bat
+4-保存当前网页.bat
+5-卸载.bat
+```
+
+The installed CLI is:
+
+```text
+%LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe
+```
+
+The unpacked extension uses a fixed development key, so its extension ID remains stable across package rebuilds.
+
+## Protocol v2
+
+Run:
+
+```powershell
+$cli = "$env:LOCALAPPDATA\ZoteroScriptTrigger\zotero_script_trigger_cli.exe"
+& $cli ping
+```
+
+A compatible response includes:
+
+```json
+{
+  "success": true,
+  "protocolVersion": 2,
+  "capabilities": [
+    "list-tabs",
+    "save-active",
+    "save-tab",
+    "save-url",
+    "save-title"
+  ]
+}
+```
+
+Agent integrations must require protocol version 2 and capability `save-url`.
+
+## Commands
+
+```powershell
+& $cli ping
+& $cli list-tabs
+& $cli save-active
+& $cli save-tab --tab-id 123
+& $cli save-url --url "https://exact.example/article"
+& $cli save-url --contains "detail?id=123"
+& $cli save-title --contains "论文标题"
+```
+
+Target selection rules:
+
+- `save-tab` selects one exact tab ID.
+- `save-url --url` requires an exact URL match.
+- `save-url --contains` and `save-title --contains` require exactly one match.
+- Zero matches return `TAB_NOT_FOUND`.
+- Multiple matches return `TAB_AMBIGUOUS`.
+- Browser-internal and non-HTTP(S) pages return `UNSUPPORTED_URL`.
+
+For automation, prefer an exact URL obtained from the browser session. Do not use `save-active` when the result must be deterministic.
+
+## Source build
 
 Use Git Bash or WSL from the repository root:
 
@@ -25,70 +98,51 @@ npm install
 
 Load `build/manifestv3` as an unpacked extension in Chrome or Edge.
 
-## Install the Windows native host
-
-1. Open `chrome://extensions` or `edge://extensions`.
-2. Enable Developer mode.
-3. Find the unpacked Zotero Connector and copy its 32-character extension ID.
-4. Open PowerShell in the repository root.
-5. Run:
+For source installation of the native host:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install-script-trigger.ps1 -ExtensionId YOUR_EXTENSION_ID -Browser Chrome
 ```
 
-For Edge, use `-Browser Edge`. V1 supports one enabled Chrome/Edge profile instance at a time because the native host owns one per-user named pipe.
+V1/V2 packaging supports one enabled Chrome/Edge profile instance per Windows user because the native host owns one per-user named pipe.
 
-The installer packages the Python host as an EXE with PyInstaller, writes a per-user named-pipe secret under `%LOCALAPPDATA%\ZoteroScriptTrigger`, and registers the native host under `HKCU`.
+## Agent integration sequence
 
-After installation, reload the unpacked extension once.
+1. Run `ping`; require protocol v2 and `save-url`.
+2. Obtain the exact URL of the already-open target page.
+3. Run `save-url --url <exact-url>`.
+4. Confirm the returned URL equals the requested URL.
+5. Independently poll Zotero for the expected metadata and attachment.
 
-## Commands
-
-```powershell
-$cli = "$env:LOCALAPPDATA\ZoteroScriptTrigger\zotero_script_trigger_cli.py"
-py -3 $cli ping
-py -3 $cli save-active
-py -3 $cli save-tab --tab-id 123
-```
-
-`save-active` means the selected tab in the browser's last-focused browser window. It does not bring the browser to the foreground.
-
-## Find a tab ID
-
-Open the extension service-worker console from `chrome://extensions`, then run:
-
-```javascript
-chrome.tabs.query({}, tabs => console.table(tabs.map(t => ({ id: t.id, active: t.active, title: t.title, url: t.url }))));
-```
-
-Use the desired `id` with `save-tab --tab-id`.
+See `docs/AGENT_INTEGRATION.md` for the machine contract.
 
 ## Troubleshooting
 
-### `Specified native messaging host not found`
+### Native host not found or forbidden
 
-Reload the extension after running the installer. Check these registry keys:
+Reload the extension after installation and confirm the extension ID matches the host manifest. Registry locations:
 
 ```text
 HKCU\Software\Google\Chrome\NativeMessagingHosts\org.zotero.script_trigger
 HKCU\Software\Microsoft\Edge\NativeMessagingHosts\org.zotero.script_trigger
 ```
 
-### `Access to the specified native messaging host is forbidden`
-
-The extension ID passed to the installer does not match the currently loaded unpacked extension. Re-run the installer with the current ID, then reload the extension.
-
 ### CLI cannot connect to the named pipe
 
-The browser is closed, the extension is disabled, or the extension has not connected to the native host. Start the browser, enable/reload the extension, and run `ping` again.
+Chrome/Edge is closed, the extension is disabled, the extension has not been reloaded after installation, or another enabled browser/profile owns the per-user pipe.
 
-### Command returns `UNSUPPORTED_URL`
+### `TAB_AMBIGUOUS`
 
-The target is a browser-internal page such as `chrome://extensions`. Open an `http://` or `https://` page.
+Use `list-tabs`, then pass an exact URL or tab ID.
+
+### PowerShell red syntax errors
+
+Use a current package. Packaging converts helper scripts to UTF-8 with BOM and verifies them with Windows PowerShell 5.1.
 
 ## Uninstall
+
+Use `5-卸载.bat` from the package or:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
