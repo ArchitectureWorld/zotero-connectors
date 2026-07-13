@@ -28,7 +28,13 @@ try {
 }
 
 $capabilities = @($response.capabilities)
-if (-not $response.success -or [int]$response.protocolVersion -lt 2 -or $capabilities -notcontains 'save-url') {
+$compatible = (
+    $response.success -and
+    [int]$response.protocolVersion -ge 3 -and
+    $capabilities -contains 'save-url' -and
+    $capabilities -contains 'save-to-collection'
+)
+if (-not $compatible) {
     Write-Host ''
     Write-Host '检测到旧版插件。请删除旧插件，并重新加载当前包中的“浏览器插件”文件夹。' -ForegroundColor Red
     Write-Host "当前协议版本：$($response.protocolVersion)"
@@ -37,7 +43,7 @@ if (-not $response.success -or [int]$response.protocolVersion -lt 2 -or $capabil
 }
 
 Write-Host ''
-Write-Host '连接成功：浏览器插件已支持精确网页保存（协议 V2）。' -ForegroundColor Green
+Write-Host '连接成功：浏览器插件已支持精确网页保存与指定集合归档（协议 V3）。' -ForegroundColor Green
 Write-Host "扩展版本：$($response.extensionVersion)"
 Write-Host ''
 exit 0
