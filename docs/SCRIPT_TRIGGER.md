@@ -1,6 +1,6 @@
 # Zotero Connector Script Trigger
 
-This fork adds a Windows-local command interface that invokes the existing Zotero Connector toolbar-button action. It does not reimplement translators, snapshots, PDF handling, item selection, or Zotero saving.
+This fork adds a Windows-local command interface that invokes the existing Zotero Connector save workflow. It does not reimplement translators, snapshots, PDF handling, item selection, or Zotero persistence.
 
 ## Behavior
 
@@ -8,10 +8,14 @@ This fork adds a Windows-local command interface that invokes the existing Zoter
 - No browser window or tab is focused or activated by the trigger.
 - Exact background targeting is supported by tab ID or exact URL.
 - URL/title substring targeting fails when multiple tabs match.
+- Save commands may target an existing Zotero collection by exact full path.
+- A missing or invalid collection fails closed; it never silently falls back to My Library.
 - Browser completely closed is not supported; the CLI returns a connection error.
 - Multiple-item pages still use the official Zotero item selector.
 
-A response with `"triggered": true` means the official Connector action accepted the command. Saving may continue asynchronously, and this response is not proof that Zotero persisted metadata or an attachment.
+For ordinary saves, `"triggered": true` means the official Connector action accepted the command. Saving may continue asynchronously, so callers must verify Zotero persistence separately.
+
+For collection-targeted saves, `"collectionApplied": true` means the page save completed and the existing Zotero save session received the target-collection update. Callers should still verify the final Zotero item and attachment state.
 
 ## Beginner package
 
@@ -36,7 +40,7 @@ The installed CLI is:
 
 The unpacked extension uses a fixed development key, so its extension ID remains stable across package rebuilds.
 
-## Protocol v2
+## Protocol v3
 
 Run:
 
@@ -50,18 +54,19 @@ A compatible response includes:
 ```json
 {
   "success": true,
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "capabilities": [
     "list-tabs",
     "save-active",
     "save-tab",
     "save-url",
-    "save-title"
+    "save-title",
+    "save-to-collection"
   ]
 }
 ```
 
-Agent integrations must require protocol version 2 and capability `save-url`.
+Agent integrations that need collection targeting must require protocol version 3 plus capabilities `save-url` and `save-to-collection`.
 
 ## Commands
 
@@ -84,7 +89,30 @@ Target selection rules:
 - Multiple matches return `TAB_AMBIGUOUS`.
 - Browser-internal and non-HTTP(S) pages return `UNSUPPORTED_URL`.
 
-For automation, prefer an exact URL obtained from the browser session. Do not use `save-active` when the result must be deterministic.
+For deterministic automation, prefer an exact URL obtained from the browser session. Do not use `save-active` when the target must be unambiguous.
+
+## Save to an existing collection
+
+Create the collection manually in Zotero Desktop, then pass its path relative to the library root:
+
+```powershell
+& $cli save-url `
+  --url "https://exact.example/article" `
+  --collection "自动文献收集/建筑数字化技术/第一轮广义收集"
+```
+
+The default library target is `L1` (normally My Library). To specify it explicitly:
+
+```powershell
+& $cli save-url `
+  --url "https://exact.example/article" `
+  --collection "项目A/第一轮收集" `
+  --library-target "L1"
+```
+
+Collection paths are exact and case-sensitive. `/` separates collection levels. This version does not create collections automatically.
+
+See `docs/COLLECTION_TARGETING.md` for the JSON contract, response fields, and stable collection error codes.
 
 ## Source build
 
@@ -105,15 +133,16 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install-script-trigger.ps1 -ExtensionId YOUR_EXTENSION_ID -Browser Chrome
 ```
 
-V1/V2 packaging supports one enabled Chrome/Edge profile instance per Windows user because the native host owns one per-user named pipe.
+The current package supports one enabled Chrome/Edge profile instance per Windows user because the native host owns one per-user named pipe.
 
 ## Agent integration sequence
 
-1. Run `ping`; require protocol v2 and `save-url`.
+1. Run `ping`; require protocol v3 plus `save-url` and `save-to-collection` when collection targeting is needed.
 2. Obtain the exact URL of the already-open target page.
-3. Run `save-url --url <exact-url>`.
-4. Confirm the returned URL equals the requested URL.
-5. Independently poll Zotero for the expected metadata and attachment.
+3. Run `save-url --url <exact-url> --collection <full-path>`.
+4. Require the returned URL to equal the requested URL.
+5. Require `collectionApplied === true` and verify the returned collection path.
+6. Independently poll Zotero for the expected metadata, collection membership, and attachments.
 
 See `docs/AGENT_INTEGRATION.md` for the machine contract.
 
@@ -131,6 +160,10 @@ HKCU\Software\Microsoft\Edge\NativeMessagingHosts\org.zotero.script_trigger
 ### CLI cannot connect to the named pipe
 
 Chrome/Edge is closed, the extension is disabled, the extension has not been reloaded after installation, or another enabled browser/profile owns the per-user pipe.
+
+### `TARGET_COLLECTION_NOT_FOUND`
+
+Confirm the collection already exists in Zotero Desktop and pass the complete path from the first collection below the library root.
 
 ### `TAB_AMBIGUOUS`
 
