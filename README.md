@@ -70,7 +70,7 @@ An overview of the Zotero Connector architecture.
 ##### Chrome/Firefox Browser Extension Framework
 
 The extension uses the WebExtension API cross-browser technology. See [Chrome Extension docs](https://developer.chrome.com/extensions)
-and [Firefox Extension docs](https://developer.mozilla.org/en-US/Add-ons/WebExtensions/Content_scripts) for more information.
+and [Firefox](https://developer.mozilla.org/en-US/Add-ons/WebExtensions/Content_scripts) for more information.
 
 ##### Safari Extension Framework
 
