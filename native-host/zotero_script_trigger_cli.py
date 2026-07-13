@@ -13,6 +13,9 @@ from typing import Any
 
 from host_config import HostConfig, default_config_path, load_config
 
+SAVE_ACTIONS = {"save-active", "save-tab", "save-url", "save-title"}
+DEFAULT_LIBRARY_TARGET = "L1"
+
 
 def _non_empty(value: str | None, label: str) -> str:
     if value is None or not value.strip():
@@ -20,11 +23,23 @@ def _non_empty(value: str | None, label: str) -> str:
     return value.strip()
 
 
+def _collection_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+    path = _non_empty(value, "collection")
+    segments = [segment.strip() for segment in path.split("/")]
+    if any(not segment for segment in segments):
+        raise ValueError("collection must not contain empty path segments")
+    return "/".join(segments)
+
+
 def build_request(
     action: str,
     tab_id: int | None = None,
     url: str | None = None,
     contains: str | None = None,
+    collection_path: str | None = None,
+    library_target: str = DEFAULT_LIBRARY_TARGET,
     request_id: str | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -48,6 +63,16 @@ def build_request(
             request["urlContains"] = _non_empty(contains, "contains")
     elif action == "save-title":
         request["titleContains"] = _non_empty(contains, "contains")
+
+    normalized_collection = _collection_path(collection_path)
+    if normalized_collection is not None:
+        if action not in SAVE_ACTIONS:
+            raise ValueError("collection is supported only for save actions")
+        target = _non_empty(library_target, "library-target")
+        if not target.startswith("L") or not target[1:].isdigit():
+            raise ValueError("library-target must be a Zotero library tree ID such as L1")
+        request["collectionPath"] = normalized_collection
+        request["libraryTarget"] = target
     return request
 
 
@@ -69,6 +94,19 @@ def send_request(config: HostConfig, request: dict[str, Any], timeout: float) ->
         connection.close()
 
 
+def _add_collection_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--collection",
+        dest="collection_path",
+        help="Existing collection path relative to the selected library, e.g. Parent/Child",
+    )
+    parser.add_argument(
+        "--library-target",
+        default=DEFAULT_LIBRARY_TARGET,
+        help="Zotero library tree ID used with --collection (default: L1)",
+    )
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Trigger the official Zotero Connector save action without focusing the browser."
@@ -84,18 +122,26 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("ping", help="Check native-host and extension connectivity")
     subparsers.add_parser("list-tabs", help="List saveable HTTP(S) browser tabs")
-    subparsers.add_parser("save-active", help="Save the selected tab in the last-focused browser window")
+
+    save_active = subparsers.add_parser(
+        "save-active",
+        help="Save the selected tab in the last-focused browser window",
+    )
+    _add_collection_options(save_active)
 
     save_tab = subparsers.add_parser("save-tab", help="Save an exact tab ID without activating it")
     save_tab.add_argument("--tab-id", type=int, required=True)
+    _add_collection_options(save_tab)
 
     save_url = subparsers.add_parser("save-url", help="Save one tab selected by URL")
     url_group = save_url.add_mutually_exclusive_group(required=True)
     url_group.add_argument("--url", help="Exact tab URL")
     url_group.add_argument("--contains", help="URL substring; fails if multiple tabs match")
+    _add_collection_options(save_url)
 
     save_title = subparsers.add_parser("save-title", help="Save one tab selected by title substring")
     save_title.add_argument("--contains", required=True, help="Title substring; fails if multiple tabs match")
+    _add_collection_options(save_title)
     return parser
 
 
@@ -108,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             tab_id=getattr(args, "tab_id", None),
             url=getattr(args, "url", None),
             contains=getattr(args, "contains", None),
+            collection_path=getattr(args, "collection_path", None),
+            library_target=getattr(args, "library_target", DEFAULT_LIBRARY_TARGET),
         )
         response = send_request(config, request, args.timeout)
         print(json.dumps(response, ensure_ascii=False, indent=2))

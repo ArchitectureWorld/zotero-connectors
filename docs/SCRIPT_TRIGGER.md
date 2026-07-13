@@ -1,6 +1,6 @@
 # Zotero Connector Script Trigger
 
-This fork adds a Windows-local command interface that invokes the existing Zotero Connector toolbar-button action. It does not reimplement translators, snapshots, PDF handling, item selection, or Zotero saving.
+This fork adds a Windows-local command interface that invokes the existing Zotero Connector save workflow. It does not reimplement translators, snapshots, PDF handling, item selection, or Zotero persistence.
 
 ## Behavior
 
@@ -8,19 +8,31 @@ This fork adds a Windows-local command interface that invokes the existing Zoter
 - No browser window or tab is focused or activated by the trigger.
 - Exact background targeting is supported by tab ID or exact URL.
 - URL/title substring targeting fails when multiple tabs match.
+- Save commands may target an existing Zotero collection by exact full path.
+- A missing or invalid collection fails closed; it never silently falls back to My Library.
 - Browser completely closed is not supported; the CLI returns a connection error.
 - Multiple-item pages still use the official Zotero item selector.
 
-A response with `"triggered": true` means the official Connector action accepted the command. Saving may continue asynchronously, and this response is not proof that Zotero persisted metadata or an attachment.
+For ordinary saves, `"triggered": true` means the official Connector action accepted the command. Saving may continue asynchronously, so callers must verify Zotero persistence separately.
 
-## Beginner package
+For collection-targeted saves, `"collectionApplied": true` means the page save completed and the existing Zotero save session received the target-collection update. Callers should still verify the final Zotero item and attachment state.
 
-GitHub Actions produces a Windows ZIP containing:
+## One-click Windows package
+
+The normal end-user installation path is:
+
+```text
+0-一键安装并启动.bat
+```
+
+The package includes:
 
 ```text
 浏览器插件/
+browser/chrome-win64/
 app/zotero_script_trigger_host.exe
 app/zotero_script_trigger_cli.exe
+0-一键安装并启动.bat
 1-安装本地助手.bat
 2-加载浏览器插件.bat
 3-测试连接.bat
@@ -28,15 +40,32 @@ app/zotero_script_trigger_cli.exe
 5-卸载.bat
 ```
 
+The one-click installer:
+
+1. installs the native host and CLI under `%LOCALAPPDATA%\ZoteroScriptTrigger`;
+2. copies the extension and bundled automation browser into the installed directory;
+3. creates a persistent dedicated browser profile;
+4. creates Desktop and Start Menu shortcuts;
+5. launches the automation browser with the extension already loaded;
+6. waits for protocol version 3 and capability `save-to-collection` before reporting success.
+
+The user does not open `chrome://extensions` and does not manually select the extension folder. The old numbered installation steps remain only as a diagnostic fallback.
+
 The installed CLI is:
 
 ```text
 %LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe
 ```
 
-The unpacked extension uses a fixed development key, so its extension ID remains stable across package rebuilds.
+The dedicated browser profile is:
 
-## Protocol v2
+```text
+%LOCALAPPDATA%\ZoteroScriptTrigger\browser-profile
+```
+
+Website login state persists in that profile. See `docs/ONE_CLICK_DEPLOYMENT.md` for the full deployment and uninstall contract.
+
+## Protocol v3
 
 Run:
 
@@ -50,18 +79,19 @@ A compatible response includes:
 ```json
 {
   "success": true,
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "capabilities": [
     "list-tabs",
     "save-active",
     "save-tab",
     "save-url",
-    "save-title"
+    "save-title",
+    "save-to-collection"
   ]
 }
 ```
 
-Agent integrations must require protocol version 2 and capability `save-url`.
+Agent integrations that need collection targeting must require protocol version 3 plus capabilities `save-url` and `save-to-collection`.
 
 ## Commands
 
@@ -84,7 +114,30 @@ Target selection rules:
 - Multiple matches return `TAB_AMBIGUOUS`.
 - Browser-internal and non-HTTP(S) pages return `UNSUPPORTED_URL`.
 
-For automation, prefer an exact URL obtained from the browser session. Do not use `save-active` when the result must be deterministic.
+For deterministic automation, prefer an exact URL obtained from the browser session. Do not use `save-active` when the target must be unambiguous.
+
+## Save to an existing collection
+
+Create the collection manually in Zotero Desktop, then pass its path relative to the library root:
+
+```powershell
+& $cli save-url `
+  --url "https://exact.example/article" `
+  --collection "自动文献收集/建筑数字化技术/第一轮广义收集"
+```
+
+The default library target is `L1` (normally My Library). To specify it explicitly:
+
+```powershell
+& $cli save-url `
+  --url "https://exact.example/article" `
+  --collection "项目A/第一轮收集" `
+  --library-target "L1"
+```
+
+Collection paths are exact and case-sensitive. `/` separates collection levels. This version does not create collections automatically.
+
+See `docs/COLLECTION_TARGETING.md` for the JSON contract, response fields, and stable collection error codes.
 
 ## Source build
 
@@ -96,7 +149,7 @@ npm install
 ./build.sh -p b -d
 ```
 
-Load `build/manifestv3` as an unpacked extension in Chrome or Edge.
+Load `build/manifestv3` as an unpacked extension in Chrome or Edge only for development. End users should use the one-click package.
 
 For source installation of the native host:
 
@@ -105,23 +158,28 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install-script-trigger.ps1 -ExtensionId YOUR_EXTENSION_ID -Browser Chrome
 ```
 
-V1/V2 packaging supports one enabled Chrome/Edge profile instance per Windows user because the native host owns one per-user named pipe.
+The current package supports one enabled automation-browser profile instance per Windows user because the native host owns one per-install authenticated named pipe.
 
 ## Agent integration sequence
 
-1. Run `ping`; require protocol v2 and `save-url`.
+1. Run `ping`; require protocol v3 plus `save-url` and `save-to-collection` when collection targeting is needed.
 2. Obtain the exact URL of the already-open target page.
-3. Run `save-url --url <exact-url>`.
-4. Confirm the returned URL equals the requested URL.
-5. Independently poll Zotero for the expected metadata and attachment.
+3. Run `save-url --url <exact-url> --collection <full-path>`.
+4. Require the returned URL to equal the requested URL.
+5. Require `collectionApplied === true` and verify the returned collection path.
+6. Independently poll Zotero for the expected metadata, collection membership, and attachments.
 
 See `docs/AGENT_INTEGRATION.md` for the machine contract.
 
 ## Troubleshooting
 
+### One-click self-test did not pass
+
+Keep the installer window open and record its last returned error. Confirm Zotero Desktop is installed, then rerun `0-一键安装并启动.bat`. Reinstallation is supported and only closes the dedicated bundled browser.
+
 ### Native host not found or forbidden
 
-Reload the extension after installation and confirm the extension ID matches the host manifest. Registry locations:
+Reload the dedicated automation browser after installation and confirm the extension ID matches the host manifest. Registry locations:
 
 ```text
 HKCU\Software\Google\Chrome\NativeMessagingHosts\org.zotero.script_trigger
@@ -130,7 +188,11 @@ HKCU\Software\Microsoft\Edge\NativeMessagingHosts\org.zotero.script_trigger
 
 ### CLI cannot connect to the named pipe
 
-Chrome/Edge is closed, the extension is disabled, the extension has not been reloaded after installation, or another enabled browser/profile owns the per-user pipe.
+Launch the Desktop shortcut `Zotero 自动化浏览器`, then rerun the command.
+
+### `TARGET_COLLECTION_NOT_FOUND`
+
+Confirm the collection already exists in Zotero Desktop and pass the complete path from the first collection below the library root.
 
 ### `TAB_AMBIGUOUS`
 
@@ -142,9 +204,4 @@ Use a current package. Packaging converts helper scripts to UTF-8 with BOM and v
 
 ## Uninstall
 
-Use `5-卸载.bat` from the package or:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\uninstall-script-trigger.ps1
-```
+Use `5-卸载.bat`. It closes the dedicated automation browser and removes the installed browser, extension, profile, shortcuts, native-host registration, CLI, and local configuration. It does not modify the user's normal Chrome installation or profile.

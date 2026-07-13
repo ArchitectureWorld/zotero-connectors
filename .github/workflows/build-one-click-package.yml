@@ -1,0 +1,236 @@
+name: Build one-click Zotero package
+
+'on':
+  push:
+    branches:
+      - feature/script-trigger-collection-target
+  pull_request:
+    branches:
+      - feature/script-trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-extension:
+    name: Test and build extension
+    runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyzBMzeQE7NYNbfkgB9u2LE8XFDRsctrDtEe0kHkA/gb38Gz34miCf/fgT87FmA3BsFT90yuKwpdFEtWbEVyYvbMfxWfgcsnwm1CmG3wsaemanmpX2ykoR9qXeokZXVreaXWvLT8J78Uq2ZiXHvc8XtabZrkoTAiTf2ioTUw+C4OAkYRz9P4kvaSTkWj5Oc9IgruGdWMPvavqbqS1TjmQqW2ODqym9V7U4MMvIxMyjXnd+EQMcXQRcXBCxCRD4NrfnIesrcoeD6h1bEBNior+2R4UH42D9XhB+QLaC4IpJE+acGK9UbcZpZwBqjcDDhth15TUaH0BdxN7FuT0CGW+vwIDAQAB
+      EXPECTED_EXTENSION_ID: anakemdifclhajhpbjlgfpeokaphddam
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run automated tests
+        run: npm run test:script-trigger
+
+      - name: Build Manifest V3 extension
+        run: ./build.sh -p b -d
+
+      - name: Verify protocol v3 extension
+        run: |
+          test -f build/manifestv3/manifest.json
+          test -f build/manifestv3/scriptTrigger.js
+          grep -q "PROTOCOL_VERSION = 3" build/manifestv3/scriptTrigger.js
+          grep -q "save-to-collection" build/manifestv3/scriptTrigger.js
+          grep -q "TARGET_COLLECTION_NOT_FOUND" build/manifestv3/scriptTrigger.js
+          python - <<'PY'
+          import base64, hashlib, json, os
+          manifest = json.load(open('build/manifestv3/manifest.json', encoding='utf-8'))
+          public_key = base64.b64decode(manifest['key'])
+          digest = hashlib.sha256(public_key).digest()[:16]
+          alphabet = 'abcdefghijklmnop'
+          extension_id = ''.join(alphabet[b >> 4] + alphabet[b & 15] for b in digest)
+          assert extension_id == os.environ['EXPECTED_EXTENSION_ID']
+          print(f'Extension ID: {extension_id}')
+          PY
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-click-extension
+          path: build/manifestv3
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows:
+    name: Assemble one-click Windows package
+    needs: build-extension
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.11.1
+
+      - name: Build native host and CLI
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name zotero_script_trigger_host `
+            --paths native-host `
+            native-host/zotero_script_trigger_host.py
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --name zotero_script_trigger_cli `
+            --paths native-host `
+            native-host/zotero_script_trigger_cli.py
+
+      - name: Verify packaged CLI collection options
+        shell: pwsh
+        run: |
+          $help = & .\dist\zotero_script_trigger_cli.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI --help failed' }
+          foreach ($command in @('list-tabs', 'save-url', 'save-title')) {
+            if ($help -notmatch [regex]::Escape($command)) {
+              throw "Packaged CLI help is missing command: $command"
+            }
+          }
+          $saveUrlHelp = & .\dist\zotero_script_trigger_cli.exe save-url --help | Out-String
+          foreach ($option in @('--url', '--collection', '--library-target')) {
+            if ($saveUrlHelp -notmatch [regex]::Escape($option)) {
+              throw "Packaged CLI save-url help is missing option: $option"
+            }
+          }
+
+      - name: Download built extension
+        uses: actions/download-artifact@v4
+        with:
+          name: one-click-extension
+          path: package/浏览器插件
+
+      - name: Download stable Chrome for Testing
+        shell: pwsh
+        run: |
+          $metadata = Invoke-RestMethod 'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json'
+          $download = $metadata.channels.Stable.downloads.chrome | Where-Object { $_.platform -eq 'win64' } | Select-Object -First 1
+          if (-not $download -or -not $download.url) {
+            throw 'Could not resolve the stable Chrome for Testing win64 download.'
+          }
+          Invoke-WebRequest -Uri $download.url -OutFile chrome-for-testing.zip
+          Expand-Archive chrome-for-testing.zip -DestinationPath browser-download -Force
+          if (-not (Test-Path 'browser-download/chrome-win64/chrome.exe')) {
+            throw 'Chrome for Testing archive did not contain chrome-win64/chrome.exe.'
+          }
+          New-Item -ItemType Directory -Force package/browser | Out-Null
+          Copy-Item browser-download/chrome-win64 package/browser/chrome-win64 -Recurse -Force
+          Set-Content -Path package/browser/CHROME_FOR_TESTING_VERSION.txt -Value $metadata.channels.Stable.version -Encoding utf8
+
+      - name: Assemble one-click package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/app | Out-Null
+          New-Item -ItemType Directory -Force package/安装工具 | Out-Null
+          Copy-Item dist/zotero_script_trigger_host.exe package/app/
+          Copy-Item dist/zotero_script_trigger_cli.exe package/app/
+          Copy-Item packaging/install-packaged.ps1 package/安装工具/install.ps1
+          Copy-Item packaging/install-all.ps1 package/安装工具/install-all.ps1
+          Copy-Item packaging/launch-automation-browser.ps1 package/安装工具/launch-automation-browser.ps1
+          Copy-Item packaging/uninstall-packaged.ps1 package/安装工具/uninstall.ps1
+          Copy-Item packaging/open-extension-page.ps1 package/安装工具/open-extension-page.ps1
+          Copy-Item packaging/test-connection.ps1 package/安装工具/test-connection.ps1
+          Copy-Item packaging/save-current.ps1 package/安装工具/save-current.ps1
+          Copy-Item 'packaging/0-一键安装并启动.bat' package/
+          Copy-Item 'packaging/1-安装本地助手.bat' package/
+          Copy-Item 'packaging/2-加载浏览器插件.bat' package/
+          Copy-Item 'packaging/3-测试连接.bat' package/
+          Copy-Item 'packaging/4-保存当前网页.bat' package/
+          Copy-Item 'packaging/5-卸载.bat' package/
+          Copy-Item 'packaging/使用说明.txt' package/
+
+          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+          Get-ChildItem package/安装工具/*.ps1 | ForEach-Object {
+            $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            [System.IO.File]::WriteAllText($_.FullName, $text, $utf8Bom)
+          }
+
+      - name: Run source deployment regression tests
+        shell: pwsh
+        run: |
+          .\packaging\tests\open-extension-page-regression.ps1
+          .\packaging\tests\one-click-install-regression.ps1
+
+      - name: Verify packaged Windows PowerShell 5.1 scripts
+        shell: pwsh
+        run: |
+          foreach ($script in Get-ChildItem package/安装工具/*.ps1) {
+            $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "PowerShell script is missing UTF-8 BOM: $($script.FullName)"
+            }
+
+            $escapedPath = $script.FullName.Replace("'", "''")
+            $parseCommand = @"
+          `$tokens = `$null
+          `$errors = `$null
+          [System.Management.Automation.Language.Parser]::ParseFile('$escapedPath', [ref]`$tokens, [ref]`$errors) | Out-Null
+          if (`$errors.Count -gt 0) {
+            `$errors | ForEach-Object { Write-Error `$_.Message }
+            exit 1
+          }
+          "@
+            & powershell.exe -NoProfile -NonInteractive -Command $parseCommand
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows PowerShell 5.1 could not parse: $($script.FullName)"
+            }
+          }
+
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          $required = @(
+            'package/浏览器插件/manifest.json',
+            'package/浏览器插件/scriptTrigger.js',
+            'package/browser/chrome-win64/chrome.exe',
+            'package/app/zotero_script_trigger_host.exe',
+            'package/app/zotero_script_trigger_cli.exe',
+            'package/安装工具/install-all.ps1',
+            'package/安装工具/launch-automation-browser.ps1',
+            'package/0-一键安装并启动.bat',
+            'package/5-卸载.bat',
+            'package/使用说明.txt'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Missing package file: $path" }
+          }
+
+      - name: Compress one-click package
+        shell: pwsh
+        run: Compress-Archive -Path package/* -DestinationPath Zotero-Script-Trigger-OneClick-v3.zip -Force
+
+      - name: Upload one-click package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zotero-Script-Trigger-OneClick-v3
+          path: Zotero-Script-Trigger-OneClick-v3.zip
+          if-no-files-found: error
+          retention-days: 14

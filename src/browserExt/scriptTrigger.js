@@ -1,9 +1,9 @@
 /*
  * External script trigger for Zotero Connector.
  *
- * This module intentionally does not implement saving itself. It resolves a
- * target tab and calls Zotero.Connector_Browser.onZoteroButtonElementClick(),
- * which is the same entrypoint used by the official toolbar button.
+ * Normal requests preserve the official toolbar-button entrypoint. Requests
+ * with collectionPath resolve an existing Zotero collection and, after the
+ * official save finishes, move that save session into the requested target.
  */
 (function(root, factory) {
 	const api = factory();
@@ -22,15 +22,20 @@
 	const DEFAULT_POLL_INTERVAL = 100;
 	const DEFAULT_PAGE_READY_TIMEOUT = 15000;
 	const DEFAULT_TRANSLATOR_READY_TIMEOUT = 10000;
-	const PROTOCOL_VERSION = 2;
-	const CAPABILITIES = Object.freeze([
-		'list-tabs',
+	const DEFAULT_LIBRARY_TARGET = 'L1';
+	const PROTOCOL_VERSION = 3;
+	const SAVE_ACTIONS = Object.freeze([
 		'save-active',
 		'save-tab',
 		'save-url',
 		'save-title',
 	]);
-	const SUPPORTED_ACTIONS = new Set(['ping', ...CAPABILITIES]);
+	const CAPABILITIES = Object.freeze([
+		'list-tabs',
+		...SAVE_ACTIONS,
+		'save-to-collection',
+	]);
+	const SUPPORTED_ACTIONS = new Set(['ping', 'list-tabs', ...SAVE_ACTIONS]);
 
 	class ScriptTriggerError extends Error {
 		constructor(code, message) {
@@ -59,6 +64,41 @@
 		return value.trim();
 	}
 
+	function normalizeCollectionPath(value) {
+		const path = requireNonEmptyString(
+			value,
+			'INVALID_COLLECTION_PATH',
+			'collectionPath must be a non-empty slash-delimited path',
+		);
+		const rawSegments = path.split('/');
+		const segments = rawSegments.map(segment => segment.trim());
+		if (segments.some(segment => !segment)) {
+			throw new ScriptTriggerError(
+				'INVALID_COLLECTION_PATH',
+				'collectionPath cannot contain empty path segments',
+			);
+		}
+		return segments.join('/');
+	}
+
+	function normalizeLibraryTarget(value) {
+		if (value === undefined || value === null || value === '') {
+			return DEFAULT_LIBRARY_TARGET;
+		}
+		const target = requireNonEmptyString(
+			value,
+			'INVALID_LIBRARY_TARGET',
+			'libraryTarget must be a Zotero library tree ID such as L1',
+		);
+		if (!/^L\d+$/.test(target)) {
+			throw new ScriptTriggerError(
+				'INVALID_LIBRARY_TARGET',
+				'libraryTarget must be a Zotero library tree ID such as L1',
+			);
+		}
+		return target;
+	}
+
 	function validateRequest(request) {
 		if (!request || typeof request !== 'object' || Array.isArray(request)) {
 			throw new ScriptTriggerError('INVALID_REQUEST', 'Request must be a JSON object');
@@ -85,6 +125,22 @@
 				request.titleContains,
 				'INVALID_TITLE_SELECTOR',
 				'save-title requires a non-empty titleContains selector',
+			);
+		}
+		if (request.collectionPath !== undefined) {
+			if (!SAVE_ACTIONS.includes(request.action)) {
+				throw new ScriptTriggerError(
+					'COLLECTION_TARGET_NOT_ALLOWED',
+					'collectionPath is supported only for save actions',
+				);
+			}
+			normalizeCollectionPath(request.collectionPath);
+			normalizeLibraryTarget(request.libraryTarget);
+		}
+		else if (request.libraryTarget !== undefined) {
+			throw new ScriptTriggerError(
+				'COLLECTION_PATH_REQUIRED',
+				'libraryTarget requires collectionPath',
 			);
 		}
 	}
@@ -126,6 +182,46 @@
 			throw new ScriptTriggerError(
 				'TAB_AMBIGUOUS',
 				`Multiple browser tabs matched ${selectorDescription}; use an exact URL or tab ID`,
+			);
+		}
+		return matches[0];
+	}
+
+	function findCollectionTarget(targets, libraryTarget, collectionPath) {
+		const pathParts = [];
+		const matches = [];
+		let currentLibrary = null;
+
+		for (const target of targets || []) {
+			const level = Number.isInteger(target.level) ? target.level : Number(target.level) || 0;
+			if (level === 0) {
+				currentLibrary = String(target.id);
+				pathParts.length = 0;
+				continue;
+			}
+			pathParts.length = Math.max(0, level - 1);
+			pathParts[level - 1] = String(target.name || '').trim();
+			if (currentLibrary !== libraryTarget) continue;
+			if (pathParts.join('/') !== collectionPath) continue;
+			matches.push({
+				id: String(target.id),
+				name: String(target.name || ''),
+				path: collectionPath,
+				libraryTarget,
+				filesEditable: target.filesEditable !== false,
+			});
+		}
+
+		if (!matches.length) {
+			throw new ScriptTriggerError(
+				'TARGET_COLLECTION_NOT_FOUND',
+				`No editable Zotero collection matched ${libraryTarget}/${collectionPath}`,
+			);
+		}
+		if (matches.length > 1) {
+			throw new ScriptTriggerError(
+				'TARGET_COLLECTION_AMBIGUOUS',
+				`Multiple Zotero collections matched ${libraryTarget}/${collectionPath}`,
 			);
 		}
 		return matches[0];
@@ -174,7 +270,8 @@
 		async function getTab(tabId) {
 			try {
 				return validateTargetTab(await browserAPI.tabs.get(tabId));
-			} catch (error) {
+			}
+			catch (error) {
 				if (error instanceof ScriptTriggerError) throw error;
 				throw new ScriptTriggerError('TAB_NOT_FOUND', error.message || `No tab with id ${tabId}`);
 			}
@@ -191,7 +288,6 @@
 				}
 				await browserAPI.tabs.reload(current.id);
 			}
-
 			if (!needsWait) return current;
 
 			const ready = await waitUntil(async () => {
@@ -200,7 +296,6 @@
 				if (refreshed.status && refreshed.status !== 'complete') return null;
 				return refreshed;
 			}, pageReadyTimeout);
-
 			if (!ready) {
 				throw new ScriptTriggerError(
 					'TAB_LOAD_TIMEOUT',
@@ -249,7 +344,6 @@
 			if (request.action === 'save-tab') {
 				return getTab(request.tabId);
 			}
-
 			if (request.action === 'save-url') {
 				const tabs = await browserAPI.tabs.query({});
 				if (typeof request.url === 'string' && request.url.trim()) {
@@ -267,7 +361,6 @@
 					`URL fragment ${fragment}`,
 				);
 			}
-
 			if (request.action === 'save-title') {
 				const tabs = await browserAPI.tabs.query({});
 				const fragment = request.titleContains.trim().toLocaleLowerCase();
@@ -277,7 +370,6 @@
 					`title fragment ${request.titleContains.trim()}`,
 				);
 			}
-
 			const tabs = await browserAPI.tabs.query({
 				active: true,
 				lastFocusedWindow: true,
@@ -299,6 +391,86 @@
 			}
 		}
 
+		async function resolveCollectionTarget(request) {
+			if (request.collectionPath === undefined) return null;
+			if (!zotero.Connector || typeof zotero.Connector.callMethod !== 'function') {
+				throw new ScriptTriggerError(
+					'COLLECTION_LOOKUP_UNAVAILABLE',
+					'Zotero collection lookup is unavailable',
+				);
+			}
+			const collectionPath = normalizeCollectionPath(request.collectionPath);
+			const libraryTarget = normalizeLibraryTarget(request.libraryTarget);
+			const response = await zotero.Connector.callMethod(
+				'getSelectedCollection',
+				{ switchToReadableLibrary: true },
+			);
+			return findCollectionTarget(response && response.targets, libraryTarget, collectionPath);
+		}
+
+		async function saveIntoCollection(tab, collectionTarget) {
+			if (!zotero.Messaging || typeof zotero.Messaging.sendMessage !== 'function') {
+				throw new ScriptTriggerError(
+					'COLLECTION_UPDATE_UNAVAILABLE',
+					'Zotero save-session messaging is unavailable',
+				);
+			}
+			const tabInfo = zotero.Connector_Browser.getTabInfo(tab.id);
+			if (!tabInfo || tabInfo.uninjectable) {
+				throw new ScriptTriggerError(
+					'COLLECTION_TARGET_UNSUPPORTED',
+					'Collection targeting requires an injected Zotero save session',
+				);
+			}
+
+			if (tabInfo.translators && tabInfo.translators.length) {
+				if (typeof zotero.Connector_Browser.saveWithTranslator !== 'function') {
+					throw new ScriptTriggerError('SAVE_UNAVAILABLE', 'Translator save entrypoint is unavailable');
+				}
+				const items = await zotero.Connector_Browser.saveWithTranslator(
+					tab,
+					0,
+					{ fallbackOnFailure: true },
+				);
+				if (!items) {
+					throw new ScriptTriggerError(
+						'SAVE_NOT_CONFIRMED',
+						'The translator save did not return saved items; collection was not changed',
+					);
+				}
+			}
+			else {
+				if (typeof zotero.Connector_Browser.saveAsWebpage !== 'function') {
+					throw new ScriptTriggerError('SAVE_UNAVAILABLE', 'Webpage save entrypoint is unavailable');
+				}
+				let snapshot = true;
+				if (!tabInfo.isPDF) {
+					snapshot = zotero.Connector && zotero.Connector.isOnline
+						? !!(zotero.Connector.prefs && zotero.Connector.prefs.automaticSnapshots)
+						: !!(zotero.Prefs && typeof zotero.Prefs.get === 'function'
+							&& zotero.Prefs.get('automaticSnapshots'));
+				}
+				await zotero.Connector_Browser.saveAsWebpage(
+					tab,
+					tabInfo.frameId || 0,
+					{ snapshot },
+				);
+			}
+
+			await zotero.Messaging.sendMessage(
+				'updateSession',
+				{
+					target: collectionTarget.id,
+					tags: [],
+					note: '',
+					resaveAttachments: false,
+					removeAttachments: false,
+				},
+				tab,
+				null,
+			);
+		}
+
 		async function handleRequest(request) {
 			try {
 				validateRequest(request);
@@ -318,7 +490,6 @@
 						capabilities: Array.from(CAPABILITIES),
 					};
 				}
-
 				if (request.action === 'list-tabs') {
 					return {
 						id: request.id,
@@ -332,7 +503,14 @@
 				const prepared = await prepareTargetTab(resolvedTab);
 				const tab = prepared.tab;
 				assertExactTargetUnchanged(request, tab);
-				await zotero.Connector_Browser.onZoteroButtonElementClick(tab);
+				const collectionTarget = await resolveCollectionTarget(request);
+				if (collectionTarget) {
+					await saveIntoCollection(tab, collectionTarget);
+				}
+				else {
+					await zotero.Connector_Browser.onZoteroButtonElementClick(tab);
+				}
+
 				return {
 					id: request.id,
 					success: true,
@@ -343,8 +521,11 @@
 					windowId: tab.windowId,
 					title: tab.title || '',
 					url: tab.url || tab.pendingUrl || '',
+					collectionApplied: !!collectionTarget,
+					...(collectionTarget ? { collectionTarget } : {}),
 				};
-			} catch (error) {
+			}
+			catch (error) {
 				if (zotero.logError && !(error instanceof ScriptTriggerError)) {
 					zotero.logError(error);
 				}
@@ -372,7 +553,8 @@
 					const response = await handleRequest(request);
 					try {
 						port && port.postMessage(response);
-					} catch (error) {
+					}
+					catch (error) {
 						if (zotero.debug) zotero.debug(`Script trigger response failed: ${error.message}`);
 					}
 				});
@@ -384,7 +566,8 @@
 					port = null;
 					scheduleReconnect();
 				});
-			} catch (error) {
+			}
+			catch (error) {
 				port = null;
 				if (zotero.debug) zotero.debug(`Script trigger native host unavailable: ${error.message}`);
 				scheduleReconnect();
@@ -404,22 +587,24 @@
 			handleRequest,
 			listTabs,
 			prepareTargetTab,
+			resolveCollectionTarget,
 			resolveTab,
+			saveIntoCollection,
 			stop,
 		};
-
-		if (autoConnect) {
-			connect();
-		}
+		if (autoConnect) connect();
 		return api;
 	}
 
 	return {
 		DEFAULT_HOST_NAME,
+		DEFAULT_LIBRARY_TARGET,
 		PROTOCOL_VERSION,
 		CAPABILITIES,
 		ScriptTriggerError,
 		createScriptTrigger,
+		findCollectionTarget,
+		normalizeCollectionPath,
 	};
 });
 
@@ -434,7 +619,8 @@ if (typeof browser !== 'undefined' && typeof Zotero !== 'undefined') {
 				browserAPI: browser,
 				zotero: Zotero,
 			});
-		} catch (error) {
+		}
+		catch (error) {
 			if (Zotero.logError) Zotero.logError(error);
 		}
 	}, 0);

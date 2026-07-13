@@ -69,13 +69,14 @@ test('ping returns a versioned capability contract without selecting a tab', asy
   assert.equal(result.action, 'ping');
   assert.equal(result.extensionId, 'test-extension-id');
   assert.equal(result.extensionVersion, '1.2.3');
-  assert.equal(result.protocolVersion, 2);
+  assert.equal(result.protocolVersion, 3);
   assert.deepEqual(result.capabilities, [
     'list-tabs',
     'save-active',
     'save-tab',
     'save-url',
     'save-title',
+    'save-to-collection',
   ]);
   assert.equal(calls.queries.length, 0);
   assert.equal(calls.saves.length, 0);

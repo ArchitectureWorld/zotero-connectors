@@ -1,0 +1,85 @@
+name: Collection targeting verification
+
+'on':
+  push:
+    branches:
+      - feature/script-trigger-collection-target
+  pull_request:
+    branches:
+      - feature/script-trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Test and build protocol v3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run script-trigger tests
+        run: npm run test:script-trigger
+
+      - name: Build Manifest V3 extension
+        run: ./build.sh -p b -d
+
+      - name: Verify collection-targeting build
+        run: |
+          test -f build/manifestv3/scriptTrigger.js
+          grep -q "PROTOCOL_VERSION = 3" build/manifestv3/scriptTrigger.js
+          grep -q "save-to-collection" build/manifestv3/scriptTrigger.js
+          grep -q "TARGET_COLLECTION_NOT_FOUND" build/manifestv3/scriptTrigger.js
+
+  windows-packaging-checks:
+    name: Validate Windows helper scripts
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Parse PowerShell scripts as UTF-8
+        shell: powershell
+        run: |
+          foreach ($script in Get-ChildItem .\packaging\*.ps1) {
+            $tokens = $null
+            $errors = $null
+            $source = [System.IO.File]::ReadAllText(
+              $script.FullName,
+              [System.Text.Encoding]::UTF8
+            )
+            [System.Management.Automation.Language.Parser]::ParseInput(
+              $source,
+              $script.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell parse failed: $($script.FullName)"
+            }
+          }
+
+      - name: Run packaging regression tests
+        shell: pwsh
+        run: |
+          .\packaging\tests\open-extension-page-regression.ps1
+          .\packaging\tests\one-click-install-regression.ps1
