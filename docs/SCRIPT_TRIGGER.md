@@ -17,14 +17,22 @@ For ordinary saves, `"triggered": true` means the official Connector action acce
 
 For collection-targeted saves, `"collectionApplied": true` means the page save completed and the existing Zotero save session received the target-collection update. Callers should still verify the final Zotero item and attachment state.
 
-## Beginner package
+## One-click Windows package
 
-GitHub Actions produces a Windows ZIP containing:
+The normal end-user installation path is:
+
+```text
+0-一键安装并启动.bat
+```
+
+The package includes:
 
 ```text
 浏览器插件/
+browser/chrome-win64/
 app/zotero_script_trigger_host.exe
 app/zotero_script_trigger_cli.exe
+0-一键安装并启动.bat
 1-安装本地助手.bat
 2-加载浏览器插件.bat
 3-测试连接.bat
@@ -32,13 +40,30 @@ app/zotero_script_trigger_cli.exe
 5-卸载.bat
 ```
 
+The one-click installer:
+
+1. installs the native host and CLI under `%LOCALAPPDATA%\ZoteroScriptTrigger`;
+2. copies the extension and bundled automation browser into the installed directory;
+3. creates a persistent dedicated browser profile;
+4. creates Desktop and Start Menu shortcuts;
+5. launches the automation browser with the extension already loaded;
+6. waits for protocol version 3 and capability `save-to-collection` before reporting success.
+
+The user does not open `chrome://extensions` and does not manually select the extension folder. The old numbered installation steps remain only as a diagnostic fallback.
+
 The installed CLI is:
 
 ```text
 %LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe
 ```
 
-The unpacked extension uses a fixed development key, so its extension ID remains stable across package rebuilds.
+The dedicated browser profile is:
+
+```text
+%LOCALAPPDATA%\ZoteroScriptTrigger\browser-profile
+```
+
+Website login state persists in that profile. See `docs/ONE_CLICK_DEPLOYMENT.md` for the full deployment and uninstall contract.
 
 ## Protocol v3
 
@@ -124,7 +149,7 @@ npm install
 ./build.sh -p b -d
 ```
 
-Load `build/manifestv3` as an unpacked extension in Chrome or Edge.
+Load `build/manifestv3` as an unpacked extension in Chrome or Edge only for development. End users should use the one-click package.
 
 For source installation of the native host:
 
@@ -133,7 +158,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install-script-trigger.ps1 -ExtensionId YOUR_EXTENSION_ID -Browser Chrome
 ```
 
-The current package supports one enabled Chrome/Edge profile instance per Windows user because the native host owns one per-user named pipe.
+The current package supports one enabled automation-browser profile instance per Windows user because the native host owns one per-install authenticated named pipe.
 
 ## Agent integration sequence
 
@@ -148,9 +173,13 @@ See `docs/AGENT_INTEGRATION.md` for the machine contract.
 
 ## Troubleshooting
 
+### One-click self-test did not pass
+
+Keep the installer window open and record its last returned error. Confirm Zotero Desktop is installed, then rerun `0-一键安装并启动.bat`. Reinstallation is supported and only closes the dedicated bundled browser.
+
 ### Native host not found or forbidden
 
-Reload the extension after installation and confirm the extension ID matches the host manifest. Registry locations:
+Reload the dedicated automation browser after installation and confirm the extension ID matches the host manifest. Registry locations:
 
 ```text
 HKCU\Software\Google\Chrome\NativeMessagingHosts\org.zotero.script_trigger
@@ -159,7 +188,7 @@ HKCU\Software\Microsoft\Edge\NativeMessagingHosts\org.zotero.script_trigger
 
 ### CLI cannot connect to the named pipe
 
-Chrome/Edge is closed, the extension is disabled, the extension has not been reloaded after installation, or another enabled browser/profile owns the per-user pipe.
+Launch the Desktop shortcut `Zotero 自动化浏览器`, then rerun the command.
 
 ### `TARGET_COLLECTION_NOT_FOUND`
 
@@ -175,9 +204,4 @@ Use a current package. Packaging converts helper scripts to UTF-8 with BOM and v
 
 ## Uninstall
 
-Use `5-卸载.bat` from the package or:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\uninstall-script-trigger.ps1
-```
+Use `5-卸载.bat`. It closes the dedicated automation browser and removes the installed browser, extension, profile, shortcuts, native-host registration, CLI, and local configuration. It does not modify the user's normal Chrome installation or profile.
