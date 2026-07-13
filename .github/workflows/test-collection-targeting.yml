@@ -59,24 +59,22 @@ jobs:
       - name: Parse PowerShell scripts
         shell: powershell
         run: |
-          foreach ($script in @(
-            '.\packaging\test-connection.ps1',
-            '.\packaging\open-extension-page.ps1',
-            '.\packaging\save-current.ps1'
-          )) {
+          foreach ($script in Get-ChildItem .\packaging\*.ps1) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path $script),
+              $script.FullName,
               [ref]$tokens,
               [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
               $errors | ForEach-Object { Write-Error $_.Message }
-              throw "PowerShell parse failed: $script"
+              throw "PowerShell parse failed: $($script.FullName)"
             }
           }
 
-      - name: Run packaging regression test
+      - name: Run packaging regression tests
         shell: powershell
-        run: .\packaging\tests\open-extension-page-regression.ps1
+        run: |
+          .\packaging\tests\open-extension-page-regression.ps1
+          .\packaging\tests\one-click-install-regression.ps1
