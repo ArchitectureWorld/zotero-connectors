@@ -180,18 +180,26 @@ jobs:
           .\packaging\tests\one-click-install-regression.ps1
 
       - name: Verify packaged Windows PowerShell 5.1 scripts
-        shell: powershell
+        shell: pwsh
         run: |
           foreach ($script in Get-ChildItem package/安装工具/*.ps1) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
-              $script.FullName,
-              [ref]$tokens,
-              [ref]$errors
-            ) | Out-Null
-            if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error $_.Message }
+            $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "PowerShell script is missing UTF-8 BOM: $($script.FullName)"
+            }
+
+            $escapedPath = $script.FullName.Replace("'", "''")
+            $parseCommand = @"
+          `$tokens = `$null
+          `$errors = `$null
+          [System.Management.Automation.Language.Parser]::ParseFile('$escapedPath', [ref]`$tokens, [ref]`$errors) | Out-Null
+          if (`$errors.Count -gt 0) {
+            `$errors | ForEach-Object { Write-Error `$_.Message }
+            exit 1
+          }
+          "@
+            & powershell.exe -NoProfile -NonInteractive -Command $parseCommand
+            if ($LASTEXITCODE -ne 0) {
               throw "Windows PowerShell 5.1 could not parse: $($script.FullName)"
             }
           }
