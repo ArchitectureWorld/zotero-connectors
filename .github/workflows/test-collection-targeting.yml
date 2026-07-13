@@ -56,13 +56,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Parse PowerShell scripts
+      - name: Parse PowerShell scripts as UTF-8
         shell: powershell
         run: |
           foreach ($script in Get-ChildItem .\packaging\*.ps1) {
             $tokens = $null
             $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
+            $source = [System.IO.File]::ReadAllText(
+              $script.FullName,
+              [System.Text.Encoding]::UTF8
+            )
+            [System.Management.Automation.Language.Parser]::ParseInput(
+              $source,
               $script.FullName,
               [ref]$tokens,
               [ref]$errors
