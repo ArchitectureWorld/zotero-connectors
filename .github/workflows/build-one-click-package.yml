@@ -173,11 +173,15 @@ jobs:
             [System.IO.File]::WriteAllText($_.FullName, $text, $utf8Bom)
           }
 
-      - name: Verify PowerShell and deployment contract
-        shell: powershell
+      - name: Run source deployment regression tests
+        shell: pwsh
         run: |
           .\packaging\tests\open-extension-page-regression.ps1
           .\packaging\tests\one-click-install-regression.ps1
+
+      - name: Verify packaged Windows PowerShell 5.1 scripts
+        shell: powershell
+        run: |
           foreach ($script in Get-ChildItem package/安装工具/*.ps1) {
             $tokens = $null
             $errors = $null
