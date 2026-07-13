@@ -1,17 +1,20 @@
 $ErrorActionPreference = 'Stop'
 
 $packagingRoot = Split-Path -Parent $PSScriptRoot
-$oneClickBat = Join-Path $packagingRoot '0-一键安装并启动.bat'
+$oneClickBat = Get-ChildItem -LiteralPath $packagingRoot -Filter '0-*.bat' | Select-Object -First 1
 $installAll = Join-Path $packagingRoot 'install-all.ps1'
 $launcher = Join-Path $packagingRoot 'launch-automation-browser.ps1'
 
-foreach ($path in @($oneClickBat, $installAll, $launcher)) {
+if (-not $oneClickBat) {
+    throw 'Missing one-click deployment BAT entrypoint.'
+}
+foreach ($path in @($installAll, $launcher)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing one-click deployment file: $path"
     }
 }
 
-$batText = [System.IO.File]::ReadAllText($oneClickBat, [System.Text.Encoding]::UTF8)
+$batText = [System.IO.File]::ReadAllText($oneClickBat.FullName, [System.Text.Encoding]::UTF8)
 if ($batText -notmatch 'install-all\.ps1') {
     throw 'The one-click BAT must invoke install-all.ps1.'
 }
@@ -19,8 +22,8 @@ if ($batText -notmatch 'install-all\.ps1') {
 $installText = [System.IO.File]::ReadAllText($installAll, [System.Text.Encoding]::UTF8)
 foreach ($required in @(
     'install.ps1',
-    '浏览器插件',
-    'browser',
+    'SourceExtension',
+    'SourceBrowser',
     'chrome-win64',
     'launch-automation-browser.ps1',
     'save-to-collection',
