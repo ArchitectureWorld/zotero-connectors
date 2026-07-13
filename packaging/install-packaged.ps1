@@ -22,6 +22,13 @@ function Register-NativeHost([string]$RegistryPath) {
     Set-Item -Path $RegistryPath -Value $HostManifest
 }
 
+function New-RandomBytes([int]$Length) {
+    $bytes = New-Object byte[] $Length
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return $bytes
+}
+
 $SourceHost = Join-Path $AppDir 'zotero_script_trigger_host.exe'
 $SourceCli = Join-Path $AppDir 'zotero_script_trigger_cli.exe'
 if (-not (Test-Path $SourceHost) -or -not (Test-Path $SourceCli)) {
@@ -32,10 +39,8 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Copy-Item $SourceHost $HostExe -Force
 Copy-Item $SourceCli $CliExe -Force
 
-$randomBytes = New-Object byte[] 32
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-try { $rng.GetBytes($randomBytes) } finally { $rng.Dispose() }
-$authKey = [Convert]::ToBase64String($randomBytes)
+$authKey = [Convert]::ToBase64String((New-RandomBytes 32))
+$installationId = -join ((New-RandomBytes 8) | ForEach-Object { $_.ToString('x2') })
 
 $sha = [System.Security.Cryptography.SHA256]::Create()
 try {
@@ -44,12 +49,13 @@ try {
 } finally {
     $sha.Dispose()
 }
-$suffix = -join ($hash[0..7] | ForEach-Object { $_.ToString('x2') })
-$pipeName = "\\.\pipe\zotero-script-trigger-$suffix"
+$userSuffix = -join ($hash[0..7] | ForEach-Object { $_.ToString('x2') })
+$pipeName = "\\.\pipe\zotero-script-trigger-$userSuffix-$installationId"
 
 $configJson = @{
     pipe_name = $pipeName
     authkey = $authKey
+    installation_id = $installationId
 } | ConvertTo-Json
 Write-Utf8NoBom $ConfigPath $configJson
 
@@ -67,5 +73,4 @@ Register-NativeHost "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$HostNam
 
 Write-Host ''
 Write-Host '本地助手安装完成。' -ForegroundColor Green
-Write-Host '接下来请运行：2-加载浏览器插件.bat'
 Write-Host ''
