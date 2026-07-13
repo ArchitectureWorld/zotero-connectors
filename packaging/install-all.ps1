@@ -18,6 +18,25 @@ function Assert-PackageFile([string]$Path, [string]$Message) {
     }
 }
 
+function Stop-InstalledAutomationBrowser {
+    $browserExe = Join-Path $InstalledBrowser 'chrome.exe'
+    if (-not (Test-Path -LiteralPath $browserExe)) {
+        return
+    }
+
+    $normalizedBrowserExe = [System.IO.Path]::GetFullPath($browserExe)
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and
+        [System.IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalizedBrowserExe
+    })
+    foreach ($process in $processes) {
+        & taskkill.exe /PID $process.ProcessId /T /F 2>$null | Out-Null
+    }
+    if ($processes.Count -gt 0) {
+        Start-Sleep -Milliseconds 750
+    }
+}
+
 function Copy-DirectoryClean([string]$Source, [string]$Destination) {
     Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -72,6 +91,7 @@ Assert-PackageFile (Join-Path $PSScriptRoot 'install.ps1') '安装包缺少本�
 Write-Host ''
 Write-Host '正在安装 Zotero 自动化组件……' -ForegroundColor Cyan
 
+Stop-InstalledAutomationBrowser
 & (Join-Path $PSScriptRoot 'install.ps1')
 
 Write-Host '正在复制浏览器插件……'
