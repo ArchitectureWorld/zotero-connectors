@@ -6,7 +6,23 @@ The script trigger is a local transport into the existing Zotero Connector save 
 
 The integration does not create collections and does not replace Zotero persistence verification.
 
-## Installed executable
+## Installed runtime
+
+The normal Windows package is installed through:
+
+```text
+0-一键安装并启动.bat
+```
+
+Runtime files are installed under:
+
+```text
+%LOCALAPPDATA%\ZoteroScriptTrigger
+```
+
+The package includes a dedicated automation browser and persistent profile. Agent code must target tabs opened in the Desktop shortcut `Zotero 自动化浏览器`, not assume the user's ordinary Chrome process owns the native-host connection.
+
+The installed CLI is:
 
 ```text
 %LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe
@@ -44,6 +60,14 @@ Reject the collection integration when:
 - `protocolVersion` is below 3;
 - `save-url` or `save-to-collection` is absent.
 
+When the named pipe is unavailable, the agent may launch the installed Desktop shortcut or invoke:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\ZoteroScriptTrigger\launch-automation-browser.ps1"
+```
+
+Then retry `ping` with a bounded timeout. Do not launch or focus the user's normal Chrome profile.
+
 Consumers that do not use collection targeting may continue to accept the older ordinary-save capability contract.
 
 ## Deterministic collection save
@@ -62,7 +86,7 @@ zotero_script_trigger_cli.exe save-url `
 Before saving, the extension:
 
 1. resolves exactly one matching browser tab;
-2. reloads it in the background when Chrome marked it discarded;
+2. reloads it in the background when the browser marked it discarded;
 3. waits for page completion;
 4. waits for Zotero translator detection;
 5. confirms an exact requested URL did not change during reload;
@@ -192,31 +216,34 @@ CLI/transport errors may additionally include connection errors, timeout errors,
 
 A collection-aware importer must:
 
-1. snapshot matching Zotero item keys before triggering;
-2. stop rather than create a duplicate when attachment state cannot be checked reliably;
-3. skip a pre-existing item that already has matching metadata and the required attachment;
-4. trigger the exact URL and collection path;
-5. require the collection-aware response contract above;
-6. poll Zotero until metadata, collection membership, and attachments settle;
-7. continue polling when metadata appears before its child attachment;
-8. return `metadata_only` only after the deadline;
-9. never create a duplicate complete item.
+1. ensure the dedicated automation browser is running and protocol v3 is available;
+2. snapshot matching Zotero item keys before triggering;
+3. stop rather than create a duplicate when attachment state cannot be checked reliably;
+4. skip a pre-existing item that already has matching metadata and the required attachment;
+5. trigger the exact URL and collection path;
+6. require the collection-aware response contract above;
+7. poll Zotero until metadata, collection membership, and attachments settle;
+8. continue polling when metadata appears before its child attachment;
+9. return `metadata_only` only after the deadline;
+10. never create a duplicate complete item.
 
 ## Security and focus behavior
 
 - Communication is local: authenticated Windows named pipe plus Chrome Native Messaging.
+- Each reinstall generates a fresh named-pipe identifier and authentication key.
 - The host manifest allowlists the packaged extension ID.
 - No local TCP listener is opened.
 - The extension does not call browser focus/activation APIs.
 - Reloading a discarded tab does not activate or focus it.
 - The native host does not synthesize keyboard or mouse input.
 - URL/title substring matching and collection matching fail closed when ambiguous.
+- The dedicated browser uses its own profile and does not copy the user's normal Chrome profile.
 
 ## Known limits
 
-- Windows only for the packaged native host and CLI.
-- One enabled Chrome/Edge profile instance per Windows user in the current package.
-- Browser and Zotero Desktop must be running.
+- Windows only for the packaged native host, CLI, and one-click browser package.
+- One dedicated automation-browser profile instance per installation.
+- Zotero Desktop must be running for collection lookup and item persistence.
 - The target collection must already exist.
 - Collection names containing `/` cannot be represented by the current path syntax.
 - Multi-item translator pages may display the official selection UI.
