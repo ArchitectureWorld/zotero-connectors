@@ -12,12 +12,14 @@ Key properties:
 - No browser focus, tab activation, keyboard simulation, or mouse simulation is used.
 - Protocol v3 supports deterministic exact-URL targeting through `save-url --url`.
 - Save commands can resolve an existing Zotero collection by full path with `--collection` and fail closed when it is missing.
+- The normal Windows package is deployed through `0-一键安装并启动.bat` and includes a dedicated automation browser, so the user does not manually load the extension.
 - The packaged CLI is installed at `%LOCALAPPDATA%\ZoteroScriptTrigger\zotero_script_trigger_cli.exe`.
 - `triggered=true` means the official Connector action accepted the request; `collectionApplied=true` additionally confirms that the save session was reassigned to the resolved collection.
 
 User installation and commands: `docs/SCRIPT_TRIGGER.md`  
 Agent integration contract: `docs/AGENT_INTEGRATION.md`  
-Collection-targeting contract: `docs/COLLECTION_TARGETING.md`
+Collection-targeting contract: `docs/COLLECTION_TARGETING.md`  
+One-click deployment architecture: `docs/ONE_CLICK_DEPLOYMENT.md`
 
 ## Building
 
