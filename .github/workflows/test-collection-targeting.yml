@@ -79,7 +79,7 @@ jobs:
           }
 
       - name: Run packaging regression tests
-        shell: powershell
+        shell: pwsh
         run: |
           .\packaging\tests\open-extension-page-regression.ps1
           .\packaging\tests\one-click-install-regression.ps1
