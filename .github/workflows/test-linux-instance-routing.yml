@@ -52,6 +52,14 @@ jobs:
           set -o pipefail
           python -m unittest discover native-host/tests -v 2>&1 | tee python-test-output.txt
 
+      - name: Run Linux provisioning tests
+        id: packaging_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover packaging/tests -p 'test_linux_*.py' -v 2>&1 | tee packaging-test-output.txt
+
       - name: Upload routing diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -60,9 +68,13 @@ jobs:
           path: |
             node-test-output.txt
             python-test-output.txt
+            packaging-test-output.txt
           if-no-files-found: warn
           retention-days: 7
 
       - name: Enforce test results
-        if: steps.node_tests.outcome != 'success' || steps.python_tests.outcome != 'success'
+        if: >-
+          steps.node_tests.outcome != 'success' ||
+          steps.python_tests.outcome != 'success' ||
+          steps.packaging_tests.outcome != 'success'
         run: exit 1
