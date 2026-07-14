@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 from pathlib import Path
@@ -89,8 +90,8 @@ def _launcher_source(config_path: Path, launcher_module: Path) -> str:
 set -eu
 exec python3 {launcher} --config {config}
 """.format(
-        launcher=str(launcher_module),
-        config=str(config_path),
+        launcher=shlex.quote(str(launcher_module)),
+        config=shlex.quote(str(config_path)),
     )
 
 
@@ -98,7 +99,7 @@ def _cli_wrapper_source(cli_path: Path) -> str:
     return """#!/bin/sh
 set -eu
 exec python3 {cli} "$@"
-""".format(cli=str(cli_path))
+""".format(cli=shlex.quote(str(cli_path)))
 
 
 def managed_paths(
@@ -148,7 +149,7 @@ def install_dual_instance(
         raise FileNotFoundError(f"Native Host package is incomplete: {', '.join(missing)}")
 
     library_dir = _secure_directory(paths["library_dir"])
-    bin_dir = _secure_directory(paths["bin_dir"])
+    _secure_directory(paths["bin_dir"])
     config_dir = _secure_directory(paths["config_dir"])
     manifest_dir = _secure_directory(paths["manifest_dir"])
     socket_dir = _secure_directory(paths["runtime_dir"])
