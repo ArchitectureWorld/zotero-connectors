@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shlex
 import stat
 import tempfile
 import unittest
@@ -65,6 +66,7 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertEqual(nsy["connector_url"], "http://127.0.0.1:23120/")
         self.assertTrue(nsy["socket_path"].endswith("/nsy.sock"))
         self.assertNotEqual(zzh["native_host_name"], nsy["native_host_name"])
+        self.assertNotEqual(zzh["authkey"], nsy["authkey"])
 
         manifest_dir = self.config_home / "google-chrome" / "NativeMessagingHosts"
         for instance in ("zzh", "nsy"):
@@ -83,6 +85,40 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.runtime_dir / "zotero-script-trigger").stat().st_mode), 0o700)
         self.assertIn("ZZH", result["settings_pages"])
         self.assertIn("NSY", result["settings_pages"])
+
+    def test_generated_shell_commands_quote_paths_containing_spaces(self):
+        spaced_home = self.root / "home with space"
+        spaced_config = self.root / "config with space"
+        spaced_runtime = self.root / "runtime with space"
+        self.module.install_dual_instance(
+            source_root=self.source_root,
+            home=spaced_home,
+            config_home=spaced_config,
+            runtime_dir=spaced_runtime,
+            extension_id="anakemdifclhajhpbjlgfpeokaphddam",
+            zzh_profile_dir=self.root / "chrome zzh",
+            nsy_profile_dir=self.root / "chrome nsy",
+            token_bytes=lambda count: b"B" * count,
+        )
+
+        library_dir = spaced_home / ".local" / "lib" / "zotero-script-trigger"
+        launcher_line = (library_dir / "launch-zzh").read_text(encoding="utf-8").splitlines()[-1]
+        launcher_tokens = shlex.split(launcher_line)
+        self.assertEqual(launcher_tokens[0:2], ["exec", "python3"])
+        self.assertEqual(launcher_tokens[2], str(library_dir / "launch-instance.py"))
+        self.assertEqual(launcher_tokens[3], "--config")
+        self.assertEqual(
+            launcher_tokens[4],
+            str(spaced_config / "zotero-script-trigger" / "zzh.json"),
+        )
+
+        cli_line = (spaced_home / ".local" / "bin" / "zotero-script-trigger").read_text(
+            encoding="utf-8"
+        ).splitlines()[-1]
+        cli_tokens = shlex.split(cli_line)
+        self.assertEqual(cli_tokens[0:2], ["exec", "python3"])
+        self.assertEqual(cli_tokens[2], str(library_dir / "zotero_script_trigger_cli.py"))
+        self.assertEqual(cli_tokens[3], "$@")
 
     def test_does_not_edit_chrome_profile_internal_files(self):
         zzh_profile = self.root / "chrome-zzh"
