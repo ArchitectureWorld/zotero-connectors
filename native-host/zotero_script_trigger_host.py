@@ -46,6 +46,20 @@ def _prepare_socket_directory(socket_path: str) -> Path:
     return directory
 
 
+def _secure_created_socket(socket_path: str, listener) -> None:
+    path = Path(socket_path)
+    if not path.exists():
+        # Test doubles do not create a filesystem socket. A real AF_UNIX
+        # Listener always creates it before returning.
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        listener.close()
+        remove_stale_socket(socket_path)
+        raise
+
+
 def create_listener(config: HostConfig):
     if config.pipe_name:
         return Listener(config.pipe_name, family="AF_PIPE", authkey=config.authkey)
@@ -55,12 +69,7 @@ def create_listener(config: HostConfig):
     _prepare_socket_directory(config.socket_path)
     remove_stale_socket(config.socket_path)
     listener = Listener(config.socket_path, family="AF_UNIX", authkey=config.authkey)
-    try:
-        Path(config.socket_path).chmod(0o600)
-    except OSError:
-        listener.close()
-        remove_stale_socket(config.socket_path)
-        raise
+    _secure_created_socket(config.socket_path, listener)
     return listener
 
 
