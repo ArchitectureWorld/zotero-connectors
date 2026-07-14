@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import queue
+import socket
 import stat
 import sys
 import threading
@@ -20,19 +22,52 @@ PIPE_REQUEST_LIMIT = 1024 * 1024
 EXTENSION_RESPONSE_TIMEOUT = 60.0
 
 
-def remove_stale_socket(socket_path: str) -> None:
-    """Remove only the selected instance's stale user-owned socket path."""
-    path = Path(socket_path)
-    if not path.exists() and not path.is_symlink():
-        return
+def _owned_path_info(path: Path):
     try:
         info = path.lstat()
     except FileNotFoundError:
-        return
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"Refusing to use symbolic socket path: {path}")
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise RuntimeError(f"Refusing to remove socket not owned by current user: {path}")
     if stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"Socket path is a directory: {path}")
+    return info
+
+
+def _unix_socket_is_live(path: Path) -> bool:
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.2)
+    try:
+        result = probe.connect_ex(str(path))
+    finally:
+        probe.close()
+    if result == 0:
+        return True
+    if result in (errno.ENOENT, errno.ECONNREFUSED):
+        return False
+    raise RuntimeError(f"Cannot determine whether Unix socket is active: {path} (errno {result})")
+
+
+def remove_stale_socket(socket_path: str) -> None:
+    """Remove one stale user-owned path, but never unlink a live or symbolic socket."""
+    path = Path(socket_path)
+    info = _owned_path_info(path)
+    if info is None:
+        return
+    if stat.S_ISSOCK(info.st_mode) and _unix_socket_is_live(path):
+        raise RuntimeError(f"Script Trigger instance is already running on live socket: {path}")
+    path.unlink()
+
+
+def _remove_owned_socket_after_close(socket_path: str) -> None:
+    path = Path(socket_path)
+    info = _owned_path_info(path)
+    if info is None:
+        return
+    if not stat.S_ISSOCK(info.st_mode):
+        raise RuntimeError(f"Refusing to remove non-socket runtime path: {path}")
     path.unlink()
 
 
@@ -56,7 +91,7 @@ def _secure_created_socket(socket_path: str, listener) -> None:
         path.chmod(0o600)
     except OSError:
         listener.close()
-        remove_stale_socket(socket_path)
+        _remove_owned_socket_after_close(socket_path)
         raise
 
 
@@ -151,13 +186,20 @@ class NativeHostBroker:
             connection.send_bytes(
                 json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             )
+        except (BrokenPipeError, EOFError, OSError):
+            pass
         finally:
             connection.close()
 
     def _serve_clients(self, listener) -> None:
         try:
             while not self._stopped.is_set():
-                connection = listener.accept()
+                try:
+                    connection = listener.accept()
+                except (OSError, EOFError):
+                    if self._stopped.is_set():
+                        return
+                    raise
                 threading.Thread(
                     target=self._handle_client,
                     args=(connection,),
@@ -169,12 +211,13 @@ class NativeHostBroker:
 
     def run(self) -> int:
         listener = create_listener(self.config)
-        threading.Thread(
+        server_thread = threading.Thread(
             target=self._serve_clients,
             args=(listener,),
             daemon=True,
             name="zotero-script-trigger-listener",
-        ).start()
+        )
+        server_thread.start()
 
         try:
             while True:
@@ -184,10 +227,12 @@ class NativeHostBroker:
                 self._route_extension_response(response)
         finally:
             self._stopped.set()
+            listener.close()
+            server_thread.join(timeout=0.5)
             if self.config.socket_path:
                 try:
-                    remove_stale_socket(self.config.socket_path)
-                except OSError:
+                    _remove_owned_socket_after_close(self.config.socket_path)
+                except FileNotFoundError:
                     pass
 
 
