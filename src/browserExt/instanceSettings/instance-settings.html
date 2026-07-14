@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Zotero Connector 实例设置</title>
+	<link rel="stylesheet" href="instance-settings.css">
+</head>
+<body>
+	<main class="panel">
+		<h1>Zotero Connector 实例设置</h1>
+		<p class="description">此设置只作用于当前 Chrome Profile。手动点击和程序触发都会写入同一个 Zotero 实例。</p>
+
+		<label for="profileId">Profile ID</label>
+		<select id="profileId">
+			<option value="ZZH">ZZH</option>
+			<option value="NSY">NSY</option>
+		</select>
+
+		<label for="connectorUrl">Zotero Connector URL</label>
+		<input id="connectorUrl" type="text" readonly>
+
+		<label for="nativeHostName">Native Host</label>
+		<input id="nativeHostName" type="text" readonly>
+
+		<button id="apply" type="button">应用并重载 Connector</button>
+		<p id="status" role="status" aria-live="polite"></p>
+	</main>
+
+	<script src="../instanceSettings.js"></script>
+	<script src="instance-settings-page.js"></script>
+</body>
+</html>
