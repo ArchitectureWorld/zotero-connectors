@@ -14,8 +14,11 @@ permissions:
 
 jobs:
   test-linux-routing:
-    name: Test Linux instance routing
+    name: Test and package Linux instance routing
     runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyzBMzeQE7NYNbfkgB9u2LE8XFDRsctrDtEe0kHkA/gb38Gz34miCf/fgT87FmA3BsFT90yuKwpdFEtWbEVyYvbMfxWfgcsnwm1CmG3wsaemanmpX2ykoR9qXeokZXVreaXWvLT8J78Uq2ZiXHvc8XtabZrkoTAiTf2ioTUw+C4OAkYRz9P4kvaSTkWj5Oc9IgruGdWMPvavqbqS1TjmQqW2ODqym9V7U4MMvIxMyjXnd+EQMcXQRcXBCxCRD4NrfnIesrcoeD6h1bEBNior+2R4UH42D9XhB+QLaC4IpJE+acGK9UbcZpZwBqjcDDhth15TUaH0BdxN7FuT0CGW+vwIDAQAB
+      EXPECTED_EXTENSION_ID: anakemdifclhajhpbjlgfpeokaphddam
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -78,3 +81,61 @@ jobs:
           steps.python_tests.outcome != 'success' ||
           steps.packaging_tests.outcome != 'success'
         run: exit 1
+
+      - name: Build Manifest V3 Connector
+        run: ./build.sh -p b -d
+
+      - name: Verify routed Connector build
+        shell: bash
+        run: |
+          test -f build/manifestv3/manifest.json
+          test -f build/manifestv3/scriptTrigger.js
+          test -f build/manifestv3/instanceSettings.js
+          test -f build/manifestv3/instanceSettings/instance-settings.html
+          test -f build/manifestv3/instanceSettings/instance-settings-page.js
+          grep -q "INSTANCE_ROUTING_PROTOCOL_VERSION = 4" build/manifestv3/scriptTrigger.js
+          grep -q "instance-routing" build/manifestv3/scriptTrigger.js
+          grep -q "CONNECTOR_INSTANCE_NOT_CONFIGURED" build/manifestv3/scriptTrigger.js
+          python - <<'PY'
+          import base64, hashlib, json, os
+          manifest = json.load(open('build/manifestv3/manifest.json', encoding='utf-8'))
+          assert 'nativeMessaging' in manifest['permissions']
+          assert 'storage' in manifest['permissions']
+          public_key = base64.b64decode(manifest['key'])
+          digest = hashlib.sha256(public_key).digest()[:16]
+          alphabet = 'abcdefghijklmnop'
+          extension_id = ''.join(alphabet[b >> 4] + alphabet[b & 15] for b in digest)
+          assert extension_id == os.environ['EXPECTED_EXTENSION_ID']
+          print(f'Extension ID: {extension_id}')
+          PY
+
+      - name: Assemble Linux dual-instance package
+        shell: bash
+        run: |
+          mkdir -p package/浏览器插件 package/native-host package/安装工具
+          cp -R build/manifestv3/. package/浏览器插件/
+          cp native-host/*.py package/native-host/
+          cp packaging/linux/*.py packaging/linux/README.md package/安装工具/
+          cat > package/安装工具/安装.sh <<'SH'
+          #!/bin/sh
+          set -eu
+          SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          PACKAGE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+          exec python3 "$SCRIPT_DIR/install-linux-dual-instance.py" --source-root "$PACKAGE_ROOT" "$@"
+          SH
+          cat > package/安装工具/卸载.sh <<'SH'
+          #!/bin/sh
+          set -eu
+          SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec python3 "$SCRIPT_DIR/uninstall-linux-dual-instance.py" "$@"
+          SH
+          chmod 700 package/安装工具/安装.sh package/安装工具/卸载.sh
+          (cd package && zip -qr ../Zotero-Script-Trigger-Linux-Dual-Instance.zip .)
+
+      - name: Upload Linux dual-instance package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zotero-Script-Trigger-Linux-Dual-Instance
+          path: Zotero-Script-Trigger-Linux-Dual-Instance.zip
+          if-no-files-found: error
+          retention-days: 30
