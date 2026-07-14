@@ -112,35 +112,36 @@ jobs:
       - name: Assemble Linux dual-instance package
         shell: bash
         run: |
-          mkdir -p package/浏览器插件 package/native-host package/packaging/linux
-          cp -R build/manifestv3/. package/浏览器插件/
+          mkdir -p package/browser-extension package/native-host package/packaging/linux
+          cp -R build/manifestv3/. package/browser-extension/
           cp native-host/*.py package/native-host/
           cp packaging/linux/*.py packaging/linux/README.md package/packaging/linux/
-          cat > package/安装.sh <<'SH'
+          cat > package/install.sh <<'SH'
           #!/bin/sh
           set -eu
           PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
           exec python3 "$PACKAGE_ROOT/packaging/linux/install-linux-dual-instance.py" --source-root "$PACKAGE_ROOT" "$@"
           SH
-          cat > package/卸载.sh <<'SH'
+          cat > package/uninstall.sh <<'SH'
           #!/bin/sh
           set -eu
           PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
           exec python3 "$PACKAGE_ROOT/packaging/linux/uninstall-linux-dual-instance.py" "$@"
           SH
-          chmod 700 package/安装.sh package/卸载.sh
+          chmod 700 package/install.sh package/uninstall.sh
 
       - name: Smoke-test packaged installer
         shell: bash
         run: |
           test -f package/packaging/linux/launch-instance.py
           test -f package/native-host/zotero_script_trigger_host.py
+          test -f package/browser-extension/manifest.json
           TEMP_ROOT=$(mktemp -d)
           mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config" "$TEMP_ROOT/runtime" "$TEMP_ROOT/zzh profile" "$TEMP_ROOT/nsy profile"
           HOME="$TEMP_ROOT/home" \
           XDG_CONFIG_HOME="$TEMP_ROOT/config" \
           XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
-          ./package/安装.sh \
+          ./package/install.sh \
             --extension-id "$EXPECTED_EXTENSION_ID" \
             --zzh-profile-dir "$TEMP_ROOT/zzh profile" \
             --nsy-profile-dir "$TEMP_ROOT/nsy profile"
@@ -150,13 +151,21 @@ jobs:
           HOME="$TEMP_ROOT/home" \
           XDG_CONFIG_HOME="$TEMP_ROOT/config" \
           XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
-          ./package/卸载.sh
+          ./package/uninstall.sh
           test ! -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
           rm -rf "$TEMP_ROOT"
 
       - name: Create package archive
         shell: bash
         run: (cd package && zip -qr ../Zotero-Script-Trigger-Linux-Dual-Instance.zip .)
+
+      - name: Verify portable archive names
+        shell: bash
+        run: |
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^install.sh$'
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^uninstall.sh$'
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^browser-extension/manifest.json$'
+          ! zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '#U'
 
       - name: Upload Linux dual-instance package
         uses: actions/upload-artifact@v4
