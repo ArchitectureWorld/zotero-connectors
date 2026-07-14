@@ -1,0 +1,40 @@
+name: Linux dual Zotero routing
+
+'on':
+  push:
+    branches:
+      - docs/linux-dual-zotero-routing
+  pull_request:
+    branches:
+      - feature/script-trigger-collection-target
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux-routing:
+    name: Test Linux instance routing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Script Trigger tests
+        run: npm run test:script-trigger
