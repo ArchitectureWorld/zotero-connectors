@@ -1,14 +1,16 @@
-"""Chrome/Edge native host that bridges a Windows named pipe to the extension."""
+"""Chrome/Edge native host that bridges a local client channel to the extension."""
 
 from __future__ import annotations
 
 import json
 import os
 import queue
+import stat
 import sys
 import threading
 import uuid
 from multiprocessing.connection import Listener
+from pathlib import Path
 from typing import Any
 
 from host_config import HostConfig, load_config
@@ -16,6 +18,50 @@ from native_protocol import NativeMessageError, read_message, write_message
 
 PIPE_REQUEST_LIMIT = 1024 * 1024
 EXTENSION_RESPONSE_TIMEOUT = 60.0
+
+
+def remove_stale_socket(socket_path: str) -> None:
+    """Remove only the selected instance's stale user-owned socket path."""
+    path = Path(socket_path)
+    if not path.exists() and not path.is_symlink():
+        return
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise RuntimeError(f"Refusing to remove socket not owned by current user: {path}")
+    if stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"Socket path is a directory: {path}")
+    path.unlink()
+
+
+def _prepare_socket_directory(socket_path: str) -> Path:
+    directory = Path(socket_path).parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        directory.chmod(0o700)
+    except OSError as exc:
+        raise RuntimeError(f"Unable to secure socket directory {directory}: {exc}") from exc
+    return directory
+
+
+def create_listener(config: HostConfig):
+    if config.pipe_name:
+        return Listener(config.pipe_name, family="AF_PIPE", authkey=config.authkey)
+    if not config.socket_path:
+        raise RuntimeError("Script Trigger config has no local transport endpoint")
+
+    _prepare_socket_directory(config.socket_path)
+    remove_stale_socket(config.socket_path)
+    listener = Listener(config.socket_path, family="AF_UNIX", authkey=config.authkey)
+    try:
+        Path(config.socket_path).chmod(0o600)
+    except OSError:
+        listener.close()
+        remove_stale_socket(config.socket_path)
+        raise
+    return listener
 
 
 class NativeHostBroker:
@@ -99,7 +145,7 @@ class NativeHostBroker:
         finally:
             connection.close()
 
-    def _serve_pipe(self, listener) -> None:
+    def _serve_clients(self, listener) -> None:
         try:
             while not self._stopped.is_set():
                 connection = listener.accept()
@@ -113,19 +159,12 @@ class NativeHostBroker:
             listener.close()
 
     def run(self) -> int:
-        if os.name != "nt":
-            raise RuntimeError("The V1 native host currently supports Windows only")
-
-        listener = Listener(
-            self.config.pipe_name,
-            family="AF_PIPE",
-            authkey=self.config.authkey,
-        )
+        listener = create_listener(self.config)
         threading.Thread(
-            target=self._serve_pipe,
+            target=self._serve_clients,
             args=(listener,),
             daemon=True,
-            name="zotero-script-trigger-pipe",
+            name="zotero-script-trigger-listener",
         ).start()
 
         try:
@@ -136,6 +175,11 @@ class NativeHostBroker:
                 self._route_extension_response(response)
         finally:
             self._stopped.set()
+            if self.config.socket_path:
+                try:
+                    remove_stale_socket(self.config.socket_path)
+                except OSError:
+                    pass
 
 
 def _enable_windows_binary_stdio() -> None:
