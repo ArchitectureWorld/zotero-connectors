@@ -19,6 +19,16 @@ test('instance settings page exposes one explicit apply action for all bound fie
   assert.doesNotMatch(script, /LevelDB|Preferences\b|Local State/);
 });
 
+test('settings page loads the browser API polyfill before its own scripts', () => {
+  const html = read('src/browserExt/instanceSettings/instance-settings.html');
+  const polyfill = html.indexOf('../browser-polyfill.js');
+  const settings = html.indexOf('../instanceSettings.js');
+  const page = html.indexOf('instance-settings-page.js');
+  assert.ok(polyfill >= 0, 'browser-polyfill.js is missing');
+  assert.ok(polyfill < settings, 'polyfill must load before instanceSettings.js');
+  assert.ok(settings < page, 'settings API must load before page controller');
+});
+
 test('settings page supports only the fixed ZZH and NSY presets', () => {
   const script = read('src/browserExt/instanceSettings/instance-settings-page.js');
   assert.match(script, /presetForProfile/);
