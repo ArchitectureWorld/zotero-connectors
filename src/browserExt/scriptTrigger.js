@@ -23,7 +23,9 @@
 	const DEFAULT_PAGE_READY_TIMEOUT = 15000;
 	const DEFAULT_TRANSLATOR_READY_TIMEOUT = 10000;
 	const DEFAULT_LIBRARY_TARGET = 'L1';
-	const PROTOCOL_VERSION = 3;
+	const LEGACY_PROTOCOL_VERSION = 3;
+	const INSTANCE_ROUTING_PROTOCOL_VERSION = 4;
+	const PROTOCOL_VERSION = LEGACY_PROTOCOL_VERSION;
 	const SAVE_ACTIONS = Object.freeze([
 		'save-active',
 		'save-tab',
@@ -62,6 +64,83 @@
 			throw new ScriptTriggerError(code, message);
 		}
 		return value.trim();
+	}
+
+	function normalizeConnectorUrl(value) {
+		let url;
+		try {
+			url = new URL(requireNonEmptyString(
+				value,
+				'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				'instanceIdentity.connectorUrl is required',
+			));
+		}
+		catch (error) {
+			if (error instanceof ScriptTriggerError) throw error;
+			throw new ScriptTriggerError(
+				'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				'instanceIdentity.connectorUrl must be a valid URL',
+			);
+		}
+		if (url.protocol !== 'http:'
+			|| url.hostname !== '127.0.0.1'
+			|| !url.port
+			|| (url.pathname && url.pathname !== '/')
+			|| url.search
+			|| url.hash
+			|| url.username
+			|| url.password) {
+			throw new ScriptTriggerError(
+				'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				'instanceIdentity.connectorUrl must be http://127.0.0.1:<port>/',
+			);
+		}
+		return `http://127.0.0.1:${url.port}/`;
+	}
+
+	function normalizeInstanceIdentity(value) {
+		if (value === undefined || value === null) return null;
+		if (typeof value !== 'object' || Array.isArray(value)) {
+			throw new ScriptTriggerError(
+				'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				'instanceIdentity must be an object',
+			);
+		}
+		const profileId = requireNonEmptyString(
+			value.profileId,
+			'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+			'instanceIdentity.profileId is required',
+		).toUpperCase();
+		const instanceId = requireNonEmptyString(
+			value.instanceId,
+			'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+			'instanceIdentity.instanceId is required',
+		).toUpperCase();
+		const nativeHostName = requireNonEmptyString(
+			value.nativeHostName,
+			'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+			'instanceIdentity.nativeHostName is required',
+		);
+		const connectorUrl = normalizeConnectorUrl(value.connectorUrl);
+		if (profileId !== instanceId) {
+			throw new ScriptTriggerError(
+				'BROWSER_ZOTERO_TARGET_MISMATCH',
+				'Connector profileId and instanceId must match',
+			);
+		}
+		const expectedHost = `org.zotero.script_trigger.${profileId.toLowerCase()}`;
+		if (nativeHostName !== expectedHost) {
+			throw new ScriptTriggerError(
+				'BROWSER_ZOTERO_TARGET_MISMATCH',
+				`${profileId} must use Native Host ${expectedHost}`,
+			);
+		}
+		return Object.freeze({
+			profileId,
+			instanceId,
+			connectorUrl,
+			nativeHostName,
+		});
 	}
 
 	function normalizeCollectionPath(value) {
@@ -231,7 +310,22 @@
 		options = options || {};
 		const browserAPI = options.browserAPI;
 		const zotero = options.zotero;
-		const hostName = options.hostName || DEFAULT_HOST_NAME;
+		const instanceIdentity = normalizeInstanceIdentity(options.instanceIdentity);
+		const hostName = options.hostName
+			|| (instanceIdentity && instanceIdentity.nativeHostName)
+			|| DEFAULT_HOST_NAME;
+		if (instanceIdentity && hostName !== instanceIdentity.nativeHostName) {
+			throw new ScriptTriggerError(
+				'BROWSER_ZOTERO_TARGET_MISMATCH',
+				'Configured Native Host does not match the Connector instance identity',
+			);
+		}
+		const protocolVersion = instanceIdentity
+			? INSTANCE_ROUTING_PROTOCOL_VERSION
+			: LEGACY_PROTOCOL_VERSION;
+		const capabilities = instanceIdentity
+			? Object.freeze([...CAPABILITIES, 'instance-routing'])
+			: CAPABILITIES;
 		const schedule = options.schedule || ((fn, timeout) => setTimeout(fn, timeout));
 		const autoConnect = options.autoConnect !== false;
 		const now = options.now || (() => Date.now());
@@ -486,8 +580,9 @@
 						action: request.action,
 						extensionId: browserAPI.runtime.id,
 						extensionVersion: manifest.version,
-						protocolVersion: PROTOCOL_VERSION,
-						capabilities: Array.from(CAPABILITIES),
+						protocolVersion,
+						capabilities: Array.from(capabilities),
+						...(instanceIdentity ? instanceIdentity : {}),
 					};
 				}
 				if (request.action === 'list-tabs') {
@@ -523,6 +618,7 @@
 					url: tab.url || tab.pendingUrl || '',
 					collectionApplied: !!collectionTarget,
 					...(collectionTarget ? { collectionTarget } : {}),
+					...(instanceIdentity ? { instanceId: instanceIdentity.instanceId } : {}),
 				};
 			}
 			catch (error) {
@@ -596,32 +692,84 @@
 		return api;
 	}
 
+	async function initializeConfiguredScriptTrigger({ browserAPI, zotero, settingsAPI } = {}) {
+		if (!browserAPI || !zotero) {
+			throw new ScriptTriggerError(
+				'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				'Browser and Zotero APIs are required',
+			);
+		}
+		await zotero.initDeferred.promise;
+		if (!zotero.Connector_Browser || zotero.ScriptTrigger) return zotero.ScriptTrigger || null;
+
+		let instanceIdentity = null;
+		let hostName = DEFAULT_HOST_NAME;
+		if (zotero.isLinux && zotero.isChromium) {
+			if (!settingsAPI || !browserAPI.storage || !browserAPI.storage.local) {
+				throw new ScriptTriggerError(
+					'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+					'Linux Connector instance settings are unavailable',
+				);
+			}
+			const settings = await settingsAPI.readInstanceSettings(browserAPI.storage.local);
+			if (!settings) {
+				throw new ScriptTriggerError(
+					'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+					'Configure ZZH or NSY in the Connector instance settings page',
+				);
+			}
+			instanceIdentity = normalizeInstanceIdentity({
+				...settings,
+				instanceId: settings.profileId,
+			});
+			hostName = instanceIdentity.nativeHostName;
+			if (zotero.Prefs && zotero.Prefs.syncStorage) {
+				zotero.Prefs.syncStorage['connector.url'] = instanceIdentity.connectorUrl;
+			}
+		}
+
+		zotero.ScriptTrigger = createScriptTrigger({
+			browserAPI,
+			zotero,
+			hostName,
+			instanceIdentity,
+		});
+		return zotero.ScriptTrigger;
+	}
+
 	return {
 		DEFAULT_HOST_NAME,
 		DEFAULT_LIBRARY_TARGET,
+		LEGACY_PROTOCOL_VERSION,
+		INSTANCE_ROUTING_PROTOCOL_VERSION,
 		PROTOCOL_VERSION,
 		CAPABILITIES,
 		ScriptTriggerError,
 		createScriptTrigger,
 		findCollectionTarget,
+		initializeConfiguredScriptTrigger,
 		normalizeCollectionPath,
+		normalizeInstanceIdentity,
 	};
 });
 
 // In the extension background context this file is loaded before background.js.
-// Defer initialization until the current script turn finishes so background.js
-// can create Zotero.Connector_Browser first.
+// Wait for Zotero initialization and profile-local preferences before opening a
+// Native Messaging channel. Linux profiles fail closed when no instance is set.
 if (typeof browser !== 'undefined' && typeof Zotero !== 'undefined') {
 	setTimeout(() => {
-		try {
-			if (!Zotero.Connector_Browser || Zotero.ScriptTrigger) return;
-			Zotero.ScriptTrigger = ZoteroScriptTriggerCore.createScriptTrigger({
-				browserAPI: browser,
-				zotero: Zotero,
-			});
-		}
-		catch (error) {
+		ZoteroScriptTriggerCore.initializeConfiguredScriptTrigger({
+			browserAPI: browser,
+			zotero: Zotero,
+			settingsAPI: typeof ZoteroScriptTriggerSettings !== 'undefined'
+				? ZoteroScriptTriggerSettings
+				: null,
+		}).catch(error => {
+			Zotero.ScriptTriggerConfigurationError = {
+				code: error.code || 'CONNECTOR_INSTANCE_NOT_CONFIGURED',
+				message: error.message || String(error),
+			};
 			if (Zotero.logError) Zotero.logError(error);
-		}
+		});
 	}, 0);
 }
