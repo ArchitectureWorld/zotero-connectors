@@ -112,25 +112,51 @@ jobs:
       - name: Assemble Linux dual-instance package
         shell: bash
         run: |
-          mkdir -p package/浏览器插件 package/native-host package/安装工具
+          mkdir -p package/浏览器插件 package/native-host package/packaging/linux
           cp -R build/manifestv3/. package/浏览器插件/
           cp native-host/*.py package/native-host/
-          cp packaging/linux/*.py packaging/linux/README.md package/安装工具/
-          cat > package/安装工具/安装.sh <<'SH'
+          cp packaging/linux/*.py packaging/linux/README.md package/packaging/linux/
+          cat > package/安装.sh <<'SH'
           #!/bin/sh
           set -eu
-          SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-          PACKAGE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-          exec python3 "$SCRIPT_DIR/install-linux-dual-instance.py" --source-root "$PACKAGE_ROOT" "$@"
+          PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec python3 "$PACKAGE_ROOT/packaging/linux/install-linux-dual-instance.py" --source-root "$PACKAGE_ROOT" "$@"
           SH
-          cat > package/安装工具/卸载.sh <<'SH'
+          cat > package/卸载.sh <<'SH'
           #!/bin/sh
           set -eu
-          SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-          exec python3 "$SCRIPT_DIR/uninstall-linux-dual-instance.py" "$@"
+          PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec python3 "$PACKAGE_ROOT/packaging/linux/uninstall-linux-dual-instance.py" "$@"
           SH
-          chmod 700 package/安装工具/安装.sh package/安装工具/卸载.sh
-          (cd package && zip -qr ../Zotero-Script-Trigger-Linux-Dual-Instance.zip .)
+          chmod 700 package/安装.sh package/卸载.sh
+
+      - name: Smoke-test packaged installer
+        shell: bash
+        run: |
+          test -f package/packaging/linux/launch-instance.py
+          test -f package/native-host/zotero_script_trigger_host.py
+          TEMP_ROOT=$(mktemp -d)
+          mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config" "$TEMP_ROOT/runtime" "$TEMP_ROOT/zzh profile" "$TEMP_ROOT/nsy profile"
+          HOME="$TEMP_ROOT/home" \
+          XDG_CONFIG_HOME="$TEMP_ROOT/config" \
+          XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
+          ./package/安装.sh \
+            --extension-id "$EXPECTED_EXTENSION_ID" \
+            --zzh-profile-dir "$TEMP_ROOT/zzh profile" \
+            --nsy-profile-dir "$TEMP_ROOT/nsy profile"
+          test -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
+          test -f "$TEMP_ROOT/config/zotero-script-trigger/nsy.json"
+          test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/launch-instance.py"
+          HOME="$TEMP_ROOT/home" \
+          XDG_CONFIG_HOME="$TEMP_ROOT/config" \
+          XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
+          ./package/卸载.sh
+          test ! -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
+          rm -rf "$TEMP_ROOT"
+
+      - name: Create package archive
+        shell: bash
+        run: (cd package && zip -qr ../Zotero-Script-Trigger-Linux-Dual-Instance.zip .)
 
       - name: Upload Linux dual-instance package
         uses: actions/upload-artifact@v4
