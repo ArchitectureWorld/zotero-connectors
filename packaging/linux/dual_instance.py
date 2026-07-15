@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
+BROWSER_EXTENSION_DIRNAME = "browser-extension"
 HOST_FILES = (
     "zotero_script_trigger_host.py",
     "zotero_script_trigger_cli.py",
@@ -111,6 +112,38 @@ exec python3 {cli} "$@"
 """.format(cli=shlex.quote(str(cli_path)))
 
 
+def _remove_existing_tree(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        path.unlink()
+        return
+    shutil.rmtree(path)
+
+
+def _copy_browser_extension(source: Path, destination: Path) -> Path:
+    manifest = source / "manifest.json"
+    if not manifest.is_file():
+        raise FileNotFoundError("Browser extension package is missing manifest.json")
+
+    temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+    _remove_existing_tree(temporary)
+    shutil.copytree(source, temporary)
+    for root, directories, files in os.walk(temporary):
+        root_path = Path(root)
+        root_path.chmod(0o700)
+        for directory in directories:
+            (root_path / directory).chmod(0o700)
+        for filename in files:
+            (root_path / filename).chmod(0o600)
+
+    _remove_existing_tree(destination)
+    os.replace(temporary, destination)
+    return destination
+
+
 def managed_paths(
     *,
     home: Path | str,
@@ -129,6 +162,7 @@ def managed_paths(
         "config_home": config_path,
         "runtime_dir": runtime_path,
         "library_dir": library_dir,
+        "extension_directory": library_dir / BROWSER_EXTENSION_DIRNAME,
         "bin_dir": bin_dir,
         "config_dir": instance_config_dir,
         "manifest_dir": manifest_dir,
@@ -149,6 +183,7 @@ def install_dual_instance(
 ) -> dict[str, object]:
     source = _absolute(source_root)
     native_source = source / "native-host"
+    extension_source = source / BROWSER_EXTENSION_DIRNAME
     extension = _validate_extension_id(extension_id)
     profiles = _validate_profiles(zzh_profile_dir, nsy_profile_dir)
     paths = managed_paths(home=home, config_home=config_home, runtime_dir=runtime_dir)
@@ -156,8 +191,14 @@ def install_dual_instance(
     missing = [name for name in HOST_FILES if not (native_source / name).is_file()]
     if missing:
         raise FileNotFoundError(f"Native Host package is incomplete: {', '.join(missing)}")
+    if not (extension_source / "manifest.json").is_file():
+        raise FileNotFoundError("Browser extension package is incomplete: manifest.json")
 
     library_dir = _secure_directory(paths["library_dir"])
+    extension_directory = _copy_browser_extension(
+        extension_source,
+        paths["extension_directory"],
+    )
     _secure_directory(paths["bin_dir"])
     config_dir = _secure_directory(paths["config_dir"])
     manifest_dir = _secure_directory(paths["manifest_dir"])
@@ -192,7 +233,7 @@ def install_dual_instance(
     )
 
     settings_pages: dict[str, str] = {}
-    installed_files = [*copied, launcher_module, cli_wrapper]
+    installed_files = [extension_directory, *copied, launcher_module, cli_wrapper]
     for instance_id, route in ROUTES.items():
         config_path = config_dir / route["config_name"]
         socket_path = socket_dir / route["socket_name"]
@@ -226,6 +267,7 @@ def install_dual_instance(
 
     return {
         "extension_id": extension,
+        "extension_directory": str(extension_directory),
         "profiles": {key: str(value) for key, value in profiles.items()},
         "settings_pages": settings_pages,
         "cli": str(cli_wrapper),
@@ -241,6 +283,15 @@ def _remove_file(path: Path, removed: list[str]) -> None:
     if stat.S_ISDIR(info.st_mode):
         return
     path.unlink()
+    removed.append(str(path))
+
+
+def _remove_tree(path: Path, removed: list[str]) -> None:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    _remove_existing_tree(path)
     removed.append(str(path))
 
 
@@ -270,6 +321,7 @@ def uninstall_dual_instance(
         _remove_file(manifest_dir / f"{route['native_host_name']}.json", removed)
         _remove_file(socket_dir / route["socket_name"], removed)
 
+    _remove_tree(paths["extension_directory"], removed)
     for filename in (*HOST_FILES, "launch-instance.py"):
         _remove_file(library_dir / filename, removed)
     _remove_file(paths["cli_wrapper"], removed)
