@@ -101,7 +101,7 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertTrue((extension_dir / "manifest.json").is_file())
         self.assertTrue((extension_dir / "scriptTrigger.js").is_file())
 
-    def test_profile_directories_are_optional_for_installation(self):
+    def test_omitted_profile_directories_use_fixed_user_data_defaults(self):
         result = self.module.install_dual_instance(
             source_root=self.source_root,
             home=self.home,
@@ -113,7 +113,13 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
             token_bytes=lambda count: b"C" * count,
         )
 
-        self.assertEqual(result["profiles"], {})
+        self.assertEqual(
+            result["profiles"],
+            {
+                "ZZH": str(self.config_home / "google-chrome-zzh"),
+                "NSY": str(self.config_home / "google-chrome-nsy"),
+            },
+        )
         self.assertTrue((self.config_home / "zotero-script-trigger" / "zzh.json").exists())
         self.assertTrue((self.config_home / "zotero-script-trigger" / "nsy.json").exists())
 
