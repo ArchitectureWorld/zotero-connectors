@@ -142,15 +142,20 @@ jobs:
           HOME="$TEMP_ROOT/home" \
           XDG_CONFIG_HOME="$TEMP_ROOT/config" \
           XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
-          ./package/install.sh
+          ./package/install.sh | tee install-output.txt
           test -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
           test -f "$TEMP_ROOT/config/zotero-script-trigger/nsy.json"
           test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/launch-instance.py"
+          test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension/manifest.json"
+          grep -q 'chrome://extensions' install-output.txt
+          grep -q '加载已解压的扩展程序' install-output.txt
+          grep -Fq "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension" install-output.txt
           HOME="$TEMP_ROOT/home" \
           XDG_CONFIG_HOME="$TEMP_ROOT/config" \
           XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
           ./package/uninstall.sh
           test ! -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
+          test ! -e "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension"
           rm -rf "$TEMP_ROOT"
 
       - name: Create package archive
