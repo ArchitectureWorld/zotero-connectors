@@ -10,14 +10,28 @@ from pathlib import Path
 
 from dual_instance import install_dual_instance
 
+DEFAULT_EXTENSION_ID = "anakemdifclhajhpbjlgfpeokaphddam"
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Install two isolated Zotero Connector Script Trigger instances."
     )
-    parser.add_argument("--extension-id", required=True)
-    parser.add_argument("--zzh-profile-dir", type=Path, required=True)
-    parser.add_argument("--nsy-profile-dir", type=Path, required=True)
+    parser.add_argument(
+        "--extension-id",
+        default=DEFAULT_EXTENSION_ID,
+        help="Chrome extension ID; defaults to the packaged Connector ID.",
+    )
+    parser.add_argument(
+        "--zzh-profile-dir",
+        type=Path,
+        help="Optional ZZH Chrome profile path, used only for deployment records.",
+    )
+    parser.add_argument(
+        "--nsy-profile-dir",
+        type=Path,
+        help="Optional NSY Chrome profile path, used only for deployment records.",
+    )
     parser.add_argument(
         "--source-root",
         type=Path,
