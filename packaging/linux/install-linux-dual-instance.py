@@ -25,12 +25,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--zzh-profile-dir",
         type=Path,
-        help="Optional ZZH Chrome profile path, used only for deployment records.",
+        help=(
+            "Optional ZZH Chrome --user-data-dir root; "
+            "defaults to $XDG_CONFIG_HOME/google-chrome-zzh."
+        ),
     )
     parser.add_argument(
         "--nsy-profile-dir",
         type=Path,
-        help="Optional NSY Chrome profile path, used only for deployment records.",
+        help=(
+            "Optional NSY Chrome --user-data-dir root; "
+            "defaults to $XDG_CONFIG_HOME/google-chrome-nsy."
+        ),
     )
     parser.add_argument(
         "--source-root",
@@ -52,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         nsy_profile_dir=args.nsy_profile_dir,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    print("\n本地助手与 Connector 文件已安装。Chrome 不会自动启用解压扩展，请完成以下一次性操作：")
+    print("\n本地助手、Connector 文件与 Profile 本地 Native Messaging 注册已安装。")
+    print("Native Host 注册位置：")
+    print(f"   ZZH: {result['profile_manifests']['ZZH']}")
+    print(f"   NSY: {result['profile_manifests']['NSY']}")
+    print("\nChrome 不会自动启用解压扩展，请完成以下一次性操作：")
     print("1. 分别在 ZZH 和 NSY Chrome Profile 中打开 chrome://extensions。")
     print("2. 开启右上角“开发者模式”。")
     print("3. 点击“加载已解压的扩展程序”，两个 Profile 都选择同一目录：")
@@ -63,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"   {result['settings_pages']['ZZH']}")
     print("6. 在 NSY Profile 打开并应用：")
     print(f"   {result['settings_pages']['NSY']}")
+    print("7. 完全退出两个 Chrome 实例并重新启动一次。")
     return 0
 
 
