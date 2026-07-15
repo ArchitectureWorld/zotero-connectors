@@ -30,9 +30,24 @@ class LinuxInstallerCliTests(unittest.TestCase):
         def fake_install(**kwargs):
             calls.append(kwargs)
             extension_directory = kwargs["home"] / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"
+            config_home = kwargs["config_home"]
             return {
                 "extension_id": "anakemdifclhajhpbjlgfpeokaphddam",
                 "extension_directory": str(extension_directory),
+                "profile_manifests": {
+                    "ZZH": str(
+                        config_home
+                        / "google-chrome-zzh"
+                        / "NativeMessagingHosts"
+                        / "org.zotero.script_trigger.zzh.json"
+                    ),
+                    "NSY": str(
+                        config_home
+                        / "google-chrome-nsy"
+                        / "NativeMessagingHosts"
+                        / "org.zotero.script_trigger.nsy.json"
+                    ),
+                },
                 "settings_pages": {
                     "ZZH": "chrome-extension://anakemdifclhajhpbjlgfpeokaphddam/instanceSettings/instance-settings.html?instance=ZZH",
                     "NSY": "chrome-extension://anakemdifclhajhpbjlgfpeokaphddam/instanceSettings/instance-settings.html?instance=NSY",
@@ -75,6 +90,8 @@ class LinuxInstallerCliTests(unittest.TestCase):
         self.assertIn("chrome://extensions", rendered)
         self.assertIn("加载已解压的扩展程序", rendered)
         self.assertIn(str(home / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"), rendered)
+        self.assertIn(str(config_home / "google-chrome-zzh" / "NativeMessagingHosts"), rendered)
+        self.assertIn(str(config_home / "google-chrome-nsy" / "NativeMessagingHosts"), rendered)
         self.assertIn("ZZH", rendered)
         self.assertIn("NSY", rendered)
 
