@@ -86,6 +86,22 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertIn("ZZH", result["settings_pages"])
         self.assertIn("NSY", result["settings_pages"])
 
+    def test_profile_directories_are_optional_for_installation(self):
+        result = self.module.install_dual_instance(
+            source_root=self.source_root,
+            home=self.home,
+            config_home=self.config_home,
+            runtime_dir=self.runtime_dir,
+            extension_id="anakemdifclhajhpbjlgfpeokaphddam",
+            zzh_profile_dir=None,
+            nsy_profile_dir=None,
+            token_bytes=lambda count: b"C" * count,
+        )
+
+        self.assertEqual(result["profiles"], {})
+        self.assertTrue((self.config_home / "zotero-script-trigger" / "zzh.json").exists())
+        self.assertTrue((self.config_home / "zotero-script-trigger" / "nsy.json").exists())
+
     def test_generated_shell_commands_quote_paths_containing_spaces(self):
         spaced_home = self.root / "home with space"
         spaced_config = self.root / "config with space"
