@@ -183,6 +183,8 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.install()
         keep = self.config_home / "zotero-script-trigger" / "keep.txt"
         keep.write_text("user", encoding="utf-8")
+        extension_dir = self.home / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"
+        self.assertTrue(extension_dir.exists())
 
         removed = self.module.uninstall_dual_instance(
             home=self.home,
@@ -193,6 +195,7 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertTrue(keep.exists())
         self.assertFalse((self.config_home / "zotero-script-trigger" / "zzh.json").exists())
         self.assertFalse((self.config_home / "zotero-script-trigger" / "nsy.json").exists())
+        self.assertFalse(extension_dir.exists())
         self.assertGreater(len(removed), 0)
 
 
