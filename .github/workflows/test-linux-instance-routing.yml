@@ -4,6 +4,7 @@ name: Linux dual Zotero routing
   push:
     branches:
       - docs/linux-dual-zotero-routing
+      - feature/linux-dual-zotero-routing
   pull_request:
     branches:
       - feature/script-trigger-collection-target
@@ -130,21 +131,18 @@ jobs:
           SH
           chmod 700 package/install.sh package/uninstall.sh
 
-      - name: Smoke-test packaged installer
+      - name: Smoke-test zero-argument packaged installer
         shell: bash
         run: |
           test -f package/packaging/linux/launch-instance.py
           test -f package/native-host/zotero_script_trigger_host.py
           test -f package/browser-extension/manifest.json
           TEMP_ROOT=$(mktemp -d)
-          mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config" "$TEMP_ROOT/runtime" "$TEMP_ROOT/zzh profile" "$TEMP_ROOT/nsy profile"
+          mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config" "$TEMP_ROOT/runtime"
           HOME="$TEMP_ROOT/home" \
           XDG_CONFIG_HOME="$TEMP_ROOT/config" \
           XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
-          ./package/install.sh \
-            --extension-id "$EXPECTED_EXTENSION_ID" \
-            --zzh-profile-dir "$TEMP_ROOT/zzh profile" \
-            --nsy-profile-dir "$TEMP_ROOT/nsy profile"
+          ./package/install.sh
           test -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
           test -f "$TEMP_ROOT/config/zotero-script-trigger/nsy.json"
           test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/launch-instance.py"
