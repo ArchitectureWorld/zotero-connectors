@@ -1,8 +1,10 @@
 import importlib.util
+import io
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,11 +29,13 @@ class LinuxInstallerCliTests(unittest.TestCase):
 
         def fake_install(**kwargs):
             calls.append(kwargs)
+            extension_directory = kwargs["home"] / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"
             return {
+                "extension_directory": str(extension_directory),
                 "settings_pages": {
                     "ZZH": "chrome-extension://anakemdifclhajhpbjlgfpeokaphddam/instanceSettings/instance-settings.html?instance=ZZH",
                     "NSY": "chrome-extension://anakemdifclhajhpbjlgfpeokaphddam/instanceSettings/instance-settings.html?instance=NSY",
-                }
+                },
             }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,6 +44,7 @@ class LinuxInstallerCliTests(unittest.TestCase):
             config_home = root / "config"
             runtime_dir = root / "runtime"
             home.mkdir()
+            output = io.StringIO()
             with (
                 patch.object(module.Path, "home", return_value=home),
                 patch.dict(
@@ -51,6 +56,7 @@ class LinuxInstallerCliTests(unittest.TestCase):
                     clear=False,
                 ),
                 patch.object(module, "install_dual_instance", side_effect=fake_install),
+                redirect_stdout(output),
             ):
                 exit_code = module.main([])
 
@@ -63,6 +69,13 @@ class LinuxInstallerCliTests(unittest.TestCase):
         self.assertEqual(request["home"], home)
         self.assertEqual(request["config_home"], config_home)
         self.assertEqual(request["runtime_dir"], runtime_dir)
+
+        rendered = output.getvalue()
+        self.assertIn("chrome://extensions", rendered)
+        self.assertIn("加载已解压的扩展程序", rendered)
+        self.assertIn(str(home / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"), rendered)
+        self.assertIn("ZZH", rendered)
+        self.assertIn("NSY", rendered)
 
 
 if __name__ == "__main__":
