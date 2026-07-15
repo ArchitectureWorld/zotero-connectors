@@ -38,6 +38,13 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
             "native_protocol.py",
         ):
             (native_host / filename).write_text(f"# {filename}\n", encoding="utf-8")
+        browser_extension = self.source_root / "browser-extension"
+        browser_extension.mkdir()
+        (browser_extension / "manifest.json").write_text(
+            json.dumps({"manifest_version": 3, "name": "Test Connector", "version": "1.0"}),
+            encoding="utf-8",
+        )
+        (browser_extension / "scriptTrigger.js").write_text("// routed connector\n", encoding="utf-8")
 
     def install(self):
         return self.module.install_dual_instance(
@@ -85,6 +92,14 @@ class LinuxDualInstanceProvisioningTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.runtime_dir / "zotero-script-trigger").stat().st_mode), 0o700)
         self.assertIn("ZZH", result["settings_pages"])
         self.assertIn("NSY", result["settings_pages"])
+
+    def test_copies_browser_extension_to_stable_user_directory(self):
+        result = self.install()
+
+        extension_dir = self.home / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"
+        self.assertEqual(result["extension_directory"], str(extension_dir))
+        self.assertTrue((extension_dir / "manifest.json").is_file())
+        self.assertTrue((extension_dir / "scriptTrigger.js").is_file())
 
     def test_profile_directories_are_optional_for_installation(self):
         result = self.module.install_dual_instance(
