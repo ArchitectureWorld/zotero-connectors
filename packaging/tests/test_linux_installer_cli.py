@@ -31,6 +31,7 @@ class LinuxInstallerCliTests(unittest.TestCase):
             calls.append(kwargs)
             extension_directory = kwargs["home"] / ".local" / "lib" / "zotero-script-trigger" / "browser-extension"
             return {
+                "extension_id": "anakemdifclhajhpbjlgfpeokaphddam",
                 "extension_directory": str(extension_directory),
                 "settings_pages": {
                     "ZZH": "chrome-extension://anakemdifclhajhpbjlgfpeokaphddam/instanceSettings/instance-settings.html?instance=ZZH",
