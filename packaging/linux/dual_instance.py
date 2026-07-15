@@ -16,6 +16,7 @@ from typing import Callable
 
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 BROWSER_EXTENSION_DIRNAME = "browser-extension"
+INSTALL_STATE_NAME = "install-state.json"
 HOST_FILES = (
     "zotero_script_trigger_host.py",
     "zotero_script_trigger_cli.py",
@@ -29,6 +30,7 @@ ROUTES = {
         "socket_name": "zzh.sock",
         "config_name": "zzh.json",
         "launcher_name": "launch-zzh",
+        "default_user_data_dir": "google-chrome-zzh",
     },
     "NSY": {
         "connector_url": "http://127.0.0.1:23120/",
@@ -36,6 +38,7 @@ ROUTES = {
         "socket_name": "nsy.sock",
         "config_name": "nsy.json",
         "launcher_name": "launch-nsy",
+        "default_user_data_dir": "google-chrome-nsy",
     },
 }
 
@@ -78,20 +81,25 @@ def _validate_extension_id(extension_id: str) -> str:
     return candidate
 
 
-def _validate_profiles(
+def _resolve_profiles(
+    config_home: Path | str,
     zzh_profile_dir: Path | str | None,
     nsy_profile_dir: Path | str | None,
 ) -> dict[str, Path]:
+    config_root = _absolute(config_home)
     if zzh_profile_dir is None and nsy_profile_dir is None:
-        return {}
+        return {
+            instance_id: config_root / route["default_user_data_dir"]
+            for instance_id, route in ROUTES.items()
+        }
     if zzh_profile_dir is None or nsy_profile_dir is None:
         raise ValueError(
-            "ZZH and NSY Chrome profile directories must both be provided or both omitted"
+            "ZZH and NSY Chrome user-data directories must both be provided or both omitted"
         )
     zzh = _absolute(zzh_profile_dir)
     nsy = _absolute(nsy_profile_dir)
     if zzh == nsy:
-        raise ValueError("ZZH and NSY Chrome profile directories must be distinct")
+        raise ValueError("ZZH and NSY Chrome user-data directories must be distinct")
     return {"ZZH": zzh, "NSY": nsy}
 
 
@@ -144,6 +152,20 @@ def _copy_browser_extension(source: Path, destination: Path) -> Path:
     return destination
 
 
+def _manifest_payload(instance_id: str, route: dict[str, str], launcher_path: Path, extension: str) -> dict:
+    return {
+        "name": route["native_host_name"],
+        "description": f"Zotero Connector Script Trigger ({instance_id})",
+        "path": str(launcher_path),
+        "type": "stdio",
+        "allowed_origins": [f"chrome-extension://{extension}/"],
+    }
+
+
+def _profile_manifest_path(profile_root: Path, route: dict[str, str]) -> Path:
+    return profile_root / "NativeMessagingHosts" / f"{route['native_host_name']}.json"
+
+
 def managed_paths(
     *,
     home: Path | str,
@@ -165,6 +187,7 @@ def managed_paths(
         "extension_directory": library_dir / BROWSER_EXTENSION_DIRNAME,
         "bin_dir": bin_dir,
         "config_dir": instance_config_dir,
+        "install_state": instance_config_dir / INSTALL_STATE_NAME,
         "manifest_dir": manifest_dir,
         "cli_wrapper": bin_dir / "zotero-script-trigger",
     }
@@ -185,8 +208,12 @@ def install_dual_instance(
     native_source = source / "native-host"
     extension_source = source / BROWSER_EXTENSION_DIRNAME
     extension = _validate_extension_id(extension_id)
-    profiles = _validate_profiles(zzh_profile_dir, nsy_profile_dir)
     paths = managed_paths(home=home, config_home=config_home, runtime_dir=runtime_dir)
+    profiles = _resolve_profiles(
+        paths["config_home"],
+        zzh_profile_dir,
+        nsy_profile_dir,
+    )
 
     missing = [name for name in HOST_FILES if not (native_source / name).is_file()]
     if missing:
@@ -203,6 +230,10 @@ def install_dual_instance(
     config_dir = _secure_directory(paths["config_dir"])
     manifest_dir = _secure_directory(paths["manifest_dir"])
     socket_dir = _secure_directory(paths["runtime_dir"])
+    profile_manifest_dirs = {
+        instance_id: _secure_directory(profile_root / "NativeMessagingHosts")
+        for instance_id, profile_root in profiles.items()
+    }
 
     copied = []
     for filename in HOST_FILES:
@@ -233,12 +264,14 @@ def install_dual_instance(
     )
 
     settings_pages: dict[str, str] = {}
+    profile_manifests: dict[str, str] = {}
     installed_files = [extension_directory, *copied, launcher_module, cli_wrapper]
     for instance_id, route in ROUTES.items():
         config_path = config_dir / route["config_name"]
         socket_path = socket_dir / route["socket_name"]
         launcher_path = library_dir / route["launcher_name"]
-        manifest_path = manifest_dir / f"{route['native_host_name']}.json"
+        default_manifest_path = manifest_dir / f"{route['native_host_name']}.json"
+        profile_manifest_path = _profile_manifest_path(profiles[instance_id], route)
 
         _json_write(config_path, {
             "instance_id": instance_id,
@@ -252,23 +285,29 @@ def install_dual_instance(
             _launcher_source(config_path, launcher_module),
             0o700,
         )
-        _json_write(manifest_path, {
-            "name": route["native_host_name"],
-            "description": f"Zotero Connector Script Trigger ({instance_id})",
-            "path": str(launcher_path),
-            "type": "stdio",
-            "allowed_origins": [f"chrome-extension://{extension}/"],
-        }, mode=0o600)
-        installed_files.extend((config_path, launcher_path, manifest_path))
+        payload = _manifest_payload(instance_id, route, launcher_path, extension)
+        _json_write(default_manifest_path, payload, mode=0o600)
+        _json_write(profile_manifest_path, payload, mode=0o600)
+        profile_manifests[instance_id] = str(profile_manifest_path)
+        installed_files.extend(
+            (config_path, launcher_path, default_manifest_path, profile_manifest_path)
+        )
         settings_pages[instance_id] = (
             f"chrome-extension://{extension}/instanceSettings/instance-settings.html"
             f"?instance={instance_id}"
         )
 
+    _json_write(paths["install_state"], {
+        "profiles": {key: str(value) for key, value in profiles.items()},
+        "profile_manifests": profile_manifests,
+    })
+    installed_files.append(paths["install_state"])
+
     return {
         "extension_id": extension,
         "extension_directory": str(extension_directory),
         "profiles": {key: str(value) for key, value in profiles.items()},
+        "profile_manifests": profile_manifests,
         "settings_pages": settings_pages,
         "cli": str(cli_wrapper),
         "installed_files": [str(path) for path in installed_files],
@@ -302,6 +341,24 @@ def _remove_if_empty(path: Path) -> None:
         pass
 
 
+def _installed_profiles(paths: dict[str, object]) -> dict[str, Path]:
+    state_path = paths["install_state"]
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        raw_profiles = data.get("profiles")
+        if not isinstance(raw_profiles, dict):
+            raise ValueError("profiles must be an object")
+        profiles = {
+            instance_id: _absolute(raw_profiles[instance_id])
+            for instance_id in ROUTES
+        }
+        if profiles["ZZH"] == profiles["NSY"]:
+            raise ValueError("profile directories must be distinct")
+        return profiles
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return _resolve_profiles(paths["config_home"], None, None)
+
+
 def uninstall_dual_instance(
     *,
     home: Path | str,
@@ -313,14 +370,19 @@ def uninstall_dual_instance(
     config_dir = paths["config_dir"]
     manifest_dir = paths["manifest_dir"]
     socket_dir = paths["runtime_dir"]
+    profiles = _installed_profiles(paths)
     removed: list[str] = []
 
-    for route in ROUTES.values():
+    for instance_id, route in ROUTES.items():
         _remove_file(config_dir / route["config_name"], removed)
         _remove_file(library_dir / route["launcher_name"], removed)
         _remove_file(manifest_dir / f"{route['native_host_name']}.json", removed)
+        profile_manifest_dir = profiles[instance_id] / "NativeMessagingHosts"
+        _remove_file(profile_manifest_dir / f"{route['native_host_name']}.json", removed)
+        _remove_if_empty(profile_manifest_dir)
         _remove_file(socket_dir / route["socket_name"], removed)
 
+    _remove_file(paths["install_state"], removed)
     _remove_tree(paths["extension_directory"], removed)
     for filename in (*HOST_FILES, "launch-instance.py"):
         _remove_file(library_dir / filename, removed)
