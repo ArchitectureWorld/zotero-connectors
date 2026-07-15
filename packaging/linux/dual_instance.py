@@ -77,12 +77,21 @@ def _validate_extension_id(extension_id: str) -> str:
     return candidate
 
 
-def _validate_profiles(zzh_profile_dir: Path | str, nsy_profile_dir: Path | str) -> tuple[Path, Path]:
+def _validate_profiles(
+    zzh_profile_dir: Path | str | None,
+    nsy_profile_dir: Path | str | None,
+) -> dict[str, Path]:
+    if zzh_profile_dir is None and nsy_profile_dir is None:
+        return {}
+    if zzh_profile_dir is None or nsy_profile_dir is None:
+        raise ValueError(
+            "ZZH and NSY Chrome profile directories must both be provided or both omitted"
+        )
     zzh = _absolute(zzh_profile_dir)
     nsy = _absolute(nsy_profile_dir)
     if zzh == nsy:
         raise ValueError("ZZH and NSY Chrome profile directories must be distinct")
-    return zzh, nsy
+    return {"ZZH": zzh, "NSY": nsy}
 
 
 def _launcher_source(config_path: Path, launcher_module: Path) -> str:
@@ -134,14 +143,14 @@ def install_dual_instance(
     config_home: Path | str,
     runtime_dir: Path | str,
     extension_id: str,
-    zzh_profile_dir: Path | str,
-    nsy_profile_dir: Path | str,
+    zzh_profile_dir: Path | str | None = None,
+    nsy_profile_dir: Path | str | None = None,
     token_bytes: Callable[[int], bytes] = secrets.token_bytes,
 ) -> dict[str, object]:
     source = _absolute(source_root)
     native_source = source / "native-host"
     extension = _validate_extension_id(extension_id)
-    profiles = dict(zip(("ZZH", "NSY"), _validate_profiles(zzh_profile_dir, nsy_profile_dir)))
+    profiles = _validate_profiles(zzh_profile_dir, nsy_profile_dir)
     paths = managed_paths(home=home, config_home=config_home, runtime_dir=runtime_dir)
 
     missing = [name for name in HOST_FILES if not (native_source / name).is_file()]
