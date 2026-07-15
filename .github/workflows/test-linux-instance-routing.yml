@@ -1,0 +1,179 @@
+name: Linux dual Zotero routing
+
+'on':
+  push:
+    branches:
+      - docs/linux-dual-zotero-routing
+      - feature/linux-dual-zotero-routing
+  pull_request:
+    branches:
+      - feature/script-trigger-collection-target
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux-routing:
+    name: Test and package Linux instance routing
+    runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyzBMzeQE7NYNbfkgB9u2LE8XFDRsctrDtEe0kHkA/gb38Gz34miCf/fgT87FmA3BsFT90yuKwpdFEtWbEVyYvbMfxWfgcsnwm1CmG3wsaemanmpX2ykoR9qXeokZXVreaXWvLT8J78Uq2ZiXHvc8XtabZrkoTAiTf2ioTUw+C4OAkYRz9P4kvaSTkWj5Oc9IgruGdWMPvavqbqS1TjmQqW2ODqym9V7U4MMvIxMyjXnd+EQMcXQRcXBCxCRD4NrfnIesrcoeD6h1bEBNior+2R4UH42D9XhB+QLaC4IpJE+acGK9UbcZpZwBqjcDDhth15TUaH0BdxN7FuT0CGW+vwIDAQAB
+      EXPECTED_EXTENSION_ID: anakemdifclhajhpbjlgfpeokaphddam
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run extension routing tests
+        id: node_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test script-trigger-tests/*.test.js 2>&1 | tee node-test-output.txt
+
+      - name: Run Native Host routing tests
+        id: python_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover native-host/tests -v 2>&1 | tee python-test-output.txt
+
+      - name: Run Linux provisioning tests
+        id: packaging_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover packaging/tests -p 'test_linux_*.py' -v 2>&1 | tee packaging-test-output.txt
+
+      - name: Upload routing diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-dual-zotero-test-diagnostics
+          path: |
+            node-test-output.txt
+            python-test-output.txt
+            packaging-test-output.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce test results
+        if: >-
+          steps.node_tests.outcome != 'success' ||
+          steps.python_tests.outcome != 'success' ||
+          steps.packaging_tests.outcome != 'success'
+        run: exit 1
+
+      - name: Build Manifest V3 Connector
+        run: ./build.sh -p b -d
+
+      - name: Verify routed Connector build
+        shell: bash
+        run: |
+          test -f build/manifestv3/manifest.json
+          test -f build/manifestv3/scriptTrigger.js
+          test -f build/manifestv3/instanceSettings.js
+          test -f build/manifestv3/instanceSettings/instance-settings.html
+          test -f build/manifestv3/instanceSettings/instance-settings-page.js
+          grep -q "INSTANCE_ROUTING_PROTOCOL_VERSION = 4" build/manifestv3/scriptTrigger.js
+          grep -q "instance-routing" build/manifestv3/scriptTrigger.js
+          grep -q "CONNECTOR_INSTANCE_NOT_CONFIGURED" build/manifestv3/scriptTrigger.js
+          python - <<'PY'
+          import base64, hashlib, json, os
+          manifest = json.load(open('build/manifestv3/manifest.json', encoding='utf-8'))
+          assert 'nativeMessaging' in manifest['permissions']
+          assert 'storage' in manifest['permissions']
+          public_key = base64.b64decode(manifest['key'])
+          digest = hashlib.sha256(public_key).digest()[:16]
+          alphabet = 'abcdefghijklmnop'
+          extension_id = ''.join(alphabet[b >> 4] + alphabet[b & 15] for b in digest)
+          assert extension_id == os.environ['EXPECTED_EXTENSION_ID']
+          print(f'Extension ID: {extension_id}')
+          PY
+
+      - name: Assemble Linux dual-instance package
+        shell: bash
+        run: |
+          mkdir -p package/browser-extension package/native-host package/packaging/linux
+          cp -R build/manifestv3/. package/browser-extension/
+          cp native-host/*.py package/native-host/
+          cp packaging/linux/*.py packaging/linux/README.md package/packaging/linux/
+          cat > package/install.sh <<'SH'
+          #!/bin/sh
+          set -eu
+          PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec python3 "$PACKAGE_ROOT/packaging/linux/install-linux-dual-instance.py" --source-root "$PACKAGE_ROOT" "$@"
+          SH
+          cat > package/uninstall.sh <<'SH'
+          #!/bin/sh
+          set -eu
+          PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec python3 "$PACKAGE_ROOT/packaging/linux/uninstall-linux-dual-instance.py" "$@"
+          SH
+          chmod 700 package/install.sh package/uninstall.sh
+
+      - name: Smoke-test zero-argument packaged installer
+        shell: bash
+        run: |
+          test -f package/packaging/linux/launch-instance.py
+          test -f package/native-host/zotero_script_trigger_host.py
+          test -f package/browser-extension/manifest.json
+          TEMP_ROOT=$(mktemp -d)
+          mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config" "$TEMP_ROOT/runtime"
+          HOME="$TEMP_ROOT/home" \
+          XDG_CONFIG_HOME="$TEMP_ROOT/config" \
+          XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
+          ./package/install.sh | tee install-output.txt
+          test -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
+          test -f "$TEMP_ROOT/config/zotero-script-trigger/nsy.json"
+          test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/launch-instance.py"
+          test -f "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension/manifest.json"
+          grep -q 'chrome://extensions' install-output.txt
+          grep -q '加载已解压的扩展程序' install-output.txt
+          grep -Fq "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension" install-output.txt
+          HOME="$TEMP_ROOT/home" \
+          XDG_CONFIG_HOME="$TEMP_ROOT/config" \
+          XDG_RUNTIME_DIR="$TEMP_ROOT/runtime" \
+          ./package/uninstall.sh
+          test ! -f "$TEMP_ROOT/config/zotero-script-trigger/zzh.json"
+          test ! -e "$TEMP_ROOT/home/.local/lib/zotero-script-trigger/browser-extension"
+          rm -rf "$TEMP_ROOT"
+
+      - name: Create package archive
+        shell: bash
+        run: (cd package && zip -qr ../Zotero-Script-Trigger-Linux-Dual-Instance.zip .)
+
+      - name: Verify portable archive names
+        shell: bash
+        run: |
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^install.sh$'
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^uninstall.sh$'
+          zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '^browser-extension/manifest.json$'
+          ! zipinfo -1 Zotero-Script-Trigger-Linux-Dual-Instance.zip | grep -q '#U'
+
+      - name: Upload Linux dual-instance package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zotero-Script-Trigger-Linux-Dual-Instance
+          path: Zotero-Script-Trigger-Linux-Dual-Instance.zip
+          if-no-files-found: error
+          retention-days: 30

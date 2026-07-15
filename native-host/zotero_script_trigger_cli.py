@@ -15,6 +15,7 @@ from host_config import HostConfig, default_config_path, load_config
 
 SAVE_ACTIONS = {"save-active", "save-tab", "save-url", "save-title"}
 DEFAULT_LIBRARY_TARGET = "L1"
+INSTANCE_IDS = ("ZZH", "NSY")
 
 
 def _non_empty(value: str | None, label: str) -> str:
@@ -76,11 +77,19 @@ def build_request(
     return request
 
 
-def send_request(config: HostConfig, request: dict[str, Any], timeout: float) -> dict[str, Any]:
-    if os.name != "nt":
-        raise RuntimeError("The script trigger CLI currently supports Windows only")
+def _transport(config: HostConfig) -> tuple[str, str]:
+    if os.name == "nt":
+        if not config.pipe_name:
+            raise RuntimeError("Windows Script Trigger config is missing pipe_name")
+        return config.pipe_name, "AF_PIPE"
+    if not config.socket_path:
+        raise RuntimeError("Linux Script Trigger config is missing socket_path")
+    return config.socket_path, "AF_UNIX"
 
-    connection = Client(config.pipe_name, family="AF_PIPE", authkey=config.authkey)
+
+def send_request(config: HostConfig, request: dict[str, Any], timeout: float) -> dict[str, Any]:
+    address, family = _transport(config)
+    connection = Client(address, family=family, authkey=config.authkey)
     try:
         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         connection.send_bytes(payload)
@@ -114,8 +123,14 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=default_config_path(),
+        default=None,
         help="Path to generated script-trigger config.json",
+    )
+    parser.add_argument(
+        "--instance",
+        type=lambda value: value.upper(),
+        choices=INSTANCE_IDS,
+        help="Linux Connector instance identity (ZZH or NSY)",
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="Response timeout in seconds")
 
@@ -145,10 +160,20 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_config(args: argparse.Namespace) -> HostConfig:
+    path = args.config or default_config_path(args.instance)
+    config = load_config(path, instance_id=args.instance)
+    if args.instance and config.instance_id != args.instance:
+        raise RuntimeError(
+            f"Requested instance {args.instance} does not match config instance {config.instance_id or '(legacy)'}"
+        )
+    return config
+
+
 def main(argv: list[str] | None = None) -> int:
     args = create_parser().parse_args(argv)
     try:
-        config = load_config(args.config)
+        config = resolve_config(args)
         request = build_request(
             args.action,
             tab_id=getattr(args, "tab_id", None),

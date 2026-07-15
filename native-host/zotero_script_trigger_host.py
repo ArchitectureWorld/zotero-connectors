@@ -1,14 +1,18 @@
-"""Chrome/Edge native host that bridges a Windows named pipe to the extension."""
+"""Chrome/Edge native host that bridges a local client channel to the extension."""
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import queue
+import socket
+import stat
 import sys
 import threading
 import uuid
 from multiprocessing.connection import Listener
+from pathlib import Path
 from typing import Any
 
 from host_config import HostConfig, load_config
@@ -16,6 +20,92 @@ from native_protocol import NativeMessageError, read_message, write_message
 
 PIPE_REQUEST_LIMIT = 1024 * 1024
 EXTENSION_RESPONSE_TIMEOUT = 60.0
+
+
+def _owned_path_info(path: Path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"Refusing to use symbolic socket path: {path}")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise RuntimeError(f"Refusing to remove socket not owned by current user: {path}")
+    if stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"Socket path is a directory: {path}")
+    return info
+
+
+def _unix_socket_is_live(path: Path) -> bool:
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.2)
+    try:
+        result = probe.connect_ex(str(path))
+    finally:
+        probe.close()
+    if result == 0:
+        return True
+    if result in (errno.ENOENT, errno.ECONNREFUSED):
+        return False
+    raise RuntimeError(f"Cannot determine whether Unix socket is active: {path} (errno {result})")
+
+
+def remove_stale_socket(socket_path: str) -> None:
+    """Remove one stale user-owned path, but never unlink a live or symbolic socket."""
+    path = Path(socket_path)
+    info = _owned_path_info(path)
+    if info is None:
+        return
+    if stat.S_ISSOCK(info.st_mode) and _unix_socket_is_live(path):
+        raise RuntimeError(f"Script Trigger instance is already running on live socket: {path}")
+    path.unlink()
+
+
+def _remove_owned_socket_after_close(socket_path: str) -> None:
+    path = Path(socket_path)
+    info = _owned_path_info(path)
+    if info is None:
+        return
+    if not stat.S_ISSOCK(info.st_mode):
+        raise RuntimeError(f"Refusing to remove non-socket runtime path: {path}")
+    path.unlink()
+
+
+def _prepare_socket_directory(socket_path: str) -> Path:
+    directory = Path(socket_path).parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        directory.chmod(0o700)
+    except OSError as exc:
+        raise RuntimeError(f"Unable to secure socket directory {directory}: {exc}") from exc
+    return directory
+
+
+def _secure_created_socket(socket_path: str, listener) -> None:
+    path = Path(socket_path)
+    if not path.exists():
+        # Test doubles do not create a filesystem socket. A real AF_UNIX
+        # Listener always creates it before returning.
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        listener.close()
+        _remove_owned_socket_after_close(socket_path)
+        raise
+
+
+def create_listener(config: HostConfig):
+    if config.pipe_name:
+        return Listener(config.pipe_name, family="AF_PIPE", authkey=config.authkey)
+    if not config.socket_path:
+        raise RuntimeError("Script Trigger config has no local transport endpoint")
+
+    _prepare_socket_directory(config.socket_path)
+    remove_stale_socket(config.socket_path)
+    listener = Listener(config.socket_path, family="AF_UNIX", authkey=config.authkey)
+    _secure_created_socket(config.socket_path, listener)
+    return listener
 
 
 class NativeHostBroker:
@@ -96,13 +186,20 @@ class NativeHostBroker:
             connection.send_bytes(
                 json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             )
+        except (BrokenPipeError, EOFError, OSError):
+            pass
         finally:
             connection.close()
 
-    def _serve_pipe(self, listener) -> None:
+    def _serve_clients(self, listener) -> None:
         try:
             while not self._stopped.is_set():
-                connection = listener.accept()
+                try:
+                    connection = listener.accept()
+                except (OSError, EOFError):
+                    if self._stopped.is_set():
+                        return
+                    raise
                 threading.Thread(
                     target=self._handle_client,
                     args=(connection,),
@@ -113,20 +210,14 @@ class NativeHostBroker:
             listener.close()
 
     def run(self) -> int:
-        if os.name != "nt":
-            raise RuntimeError("The V1 native host currently supports Windows only")
-
-        listener = Listener(
-            self.config.pipe_name,
-            family="AF_PIPE",
-            authkey=self.config.authkey,
-        )
-        threading.Thread(
-            target=self._serve_pipe,
+        listener = create_listener(self.config)
+        server_thread = threading.Thread(
+            target=self._serve_clients,
             args=(listener,),
             daemon=True,
-            name="zotero-script-trigger-pipe",
-        ).start()
+            name="zotero-script-trigger-listener",
+        )
+        server_thread.start()
 
         try:
             while True:
@@ -136,6 +227,13 @@ class NativeHostBroker:
                 self._route_extension_response(response)
         finally:
             self._stopped.set()
+            listener.close()
+            server_thread.join(timeout=0.5)
+            if self.config.socket_path:
+                try:
+                    _remove_owned_socket_after_close(self.config.socket_path)
+                except FileNotFoundError:
+                    pass
 
 
 def _enable_windows_binary_stdio() -> None:
