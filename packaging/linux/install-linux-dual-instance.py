@@ -52,7 +52,17 @@ def main(argv: list[str] | None = None) -> int:
         nsy_profile_dir=args.nsy_profile_dir,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    print("\n在两个对应 Chrome Profile 中分别打开 settings_pages 并点击“应用并重载 Connector”。")
+    print("\n本地助手与 Connector 文件已安装。Chrome 不会自动启用解压扩展，请完成以下一次性操作：")
+    print("1. 分别在 ZZH 和 NSY Chrome Profile 中打开 chrome://extensions。")
+    print("2. 开启右上角“开发者模式”。")
+    print("3. 点击“加载已解压的扩展程序”，两个 Profile 都选择同一目录：")
+    print(f"   {result['extension_directory']}")
+    print("4. 确认扩展 ID 为：")
+    print(f"   {result['extension_id']}")
+    print("5. 在 ZZH Profile 打开并应用：")
+    print(f"   {result['settings_pages']['ZZH']}")
+    print("6. 在 NSY Profile 打开并应用：")
+    print(f"   {result['settings_pages']['NSY']}")
     return 0
 
 
